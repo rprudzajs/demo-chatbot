@@ -194,6 +194,17 @@ const ChatWidget: React.FC<ChatWidgetProps> = ({ initialCar }) => {
               ></i>
             </div>
           </div>
+          {initError && (
+            <div className={`px-3 py-2 text-[12px] border-b ${
+              initError === 'missing_key'
+                ? 'bg-amber-50 text-amber-800 border-amber-200'
+                : 'bg-red-50 text-red-700 border-red-200'
+            }`}>
+              {initError === 'missing_key'
+                ? 'Gemini no está conectado: falta VITE_GEMINI_API_KEY en Railway.'
+                : 'Gemini no está disponible ahora. Intenta de nuevo en unos minutos.'}
+            </div>
+          )}
 
           {/* Messages Area */}
           <div className="flex-grow overflow-y-auto p-3 sm:p-6 space-y-4 bg-white">
