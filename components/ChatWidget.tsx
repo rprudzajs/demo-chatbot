@@ -1,7 +1,7 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import { Message, Car } from '../types';
-import { createCarChat } from '../services/geminiService';
+import { createCarChat, isGeminiConfigured } from '../services/geminiService';
 import { Chat, GenerateContentResponse } from '@google/genai';
 
 interface ChatWidgetProps {
@@ -24,17 +24,27 @@ const ChatWidget: React.FC<ChatWidgetProps> = ({ initialCar }) => {
   const [isTyping, setIsTyping] = useState(false);
   const [chatSession, setChatSession] = useState<Chat | null>(null);
   const [useMockResponses, setUseMockResponses] = useState(false);
+  const [initError, setInitError] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    if (!isGeminiConfigured()) {
+      setChatSession(null);
+      setUseMockResponses(true);
+      setInitError('missing_key');
+      return;
+    }
+
     try {
       const session = createCarChat();
       setChatSession(session);
       setUseMockResponses(false);
+      setInitError(null);
     } catch (error) {
       console.error("Failed to initialize chat session", error);
       setChatSession(null);
-      setUseMockResponses(true);
+      setUseMockResponses(false);
+      setInitError('init_failed');
     }
   }, []);
 
@@ -103,6 +113,19 @@ const ChatWidget: React.FC<ChatWidgetProps> = ({ initialCar }) => {
     setIsTyping(true);
 
     if (!chatSession || useMockResponses) {
+      if (!useMockResponses) {
+        setIsTyping(false);
+        setMessages(prev => [...prev, {
+          id: Date.now().toString(),
+          role: 'model',
+          text: initError === 'missing_key'
+            ? 'La API key de Gemini no está configurada. Agrega `VITE_GEMINI_API_KEY` y vuelve a desplegar.'
+            : 'No puedo conectar con Gemini ahora. Intenta de nuevo en unos minutos.',
+          timestamp: new Date()
+        }]);
+        return;
+      }
+
       const botMsgId = (Date.now() + 1).toString();
       setMessages(prev => [...prev, {
         id: botMsgId,
