@@ -21,6 +21,7 @@ const ChatWidget: React.FC<ChatWidgetProps> = ({ initialCar }) => {
     }
   ]);
   const [suggestions, setSuggestions] = useState<string[]>([
+    'Ver alternativas similares',
     'Ver todos los modelos',
     'Buscar por presupuesto',
     'Tipo de auto'
