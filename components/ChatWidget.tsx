@@ -20,7 +20,11 @@ const ChatWidget: React.FC<ChatWidgetProps> = ({ initialCar }) => {
       timestamp: new Date()
     }
   ]);
-  const [suggestions, setSuggestions] = useState<string[]>(['¿Sigue disponible?', '¿Aceptan permutas?', 'Ver financiamiento']);
+  const [suggestions, setSuggestions] = useState<string[]>([
+    'Ver todos los modelos',
+    'Buscar por presupuesto',
+    'Tipo de auto'
+  ]);
   const [isTyping, setIsTyping] = useState(false);
   const [chatSession, setChatSession] = useState<Chat | null>(null);
   const [initError, setInitError] = useState<string | null>(null);
