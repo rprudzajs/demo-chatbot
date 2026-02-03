@@ -13,7 +13,7 @@ export const MOCK_CARS: Car[] = [
     transmission: 'Automática',
     color: 'Blanco',
     description: 'Impecable Toyota Corolla 2021. Único dueño, todos los mantenimientos en agencia. Muy económico y confiable.',
-    imageUrl: 'https://source.unsplash.com/featured/800x600?toyota,corolla',
+    imageUrl: 'https://images.unsplash.com/photo-1621007947382-bb3c3994e3fb?auto=format&fit=crop&w=600&q=60',
     features: ['Cámara de reversa', 'Apple CarPlay', 'Alerta de carril', 'Control crucero']
   },
   {
@@ -27,7 +27,7 @@ export const MOCK_CARS: Car[] = [
     transmission: 'Automática',
     color: 'Azul',
     description: 'Ford F-150 Lariat 4x4. Motor EcoBoost, asientos de cuero y techo panorámico. Lista para el trabajo o la aventura.',
-    imageUrl: 'https://source.unsplash.com/featured/800x600?ford,f150,truck',
+    imageUrl: 'https://images.unsplash.com/photo-1605806616949-1e87b487fc2f?auto=format&fit=crop&w=600&q=60',
     features: ['Tracción 4x4', 'Asientos con calefacción', 'Techo panorámico', 'Paquete de arrastre']
   },
   {
@@ -41,7 +41,7 @@ export const MOCK_CARS: Car[] = [
     transmission: 'Automática',
     color: 'Negro',
     description: 'Tesla Model 3 Long Range en negro sólido. Autopilot habilitado, estado de batería excelente. Cero emisiones.',
-    imageUrl: 'https://source.unsplash.com/featured/800x600?tesla,model3',
+    imageUrl: 'https://images.unsplash.com/photo-1560958089-b8a1929cea89?auto=format&fit=crop&w=600&q=60',
     features: ['Autopilot', 'Pantalla 15"', 'Techo de cristal', 'Supercarga habilitada']
   },
   {
@@ -55,7 +55,7 @@ export const MOCK_CARS: Car[] = [
     transmission: 'Manual',
     color: 'Rojo',
     description: 'Jeep Wrangler Sport Rojo. Techo blando, 4x4 real. Perfecto para los amantes del off-road y la libertad.',
-    imageUrl: 'https://source.unsplash.com/featured/800x600?jeep,wrangler',
+    imageUrl: 'https://images.unsplash.com/photo-1539441906048-70c319ef7312?auto=format&fit=crop&w=600&q=60',
     features: ['Tracción 4WD', 'Bluetooth', 'Llantas Off-Road', 'Techo removible']
   }
 ];
