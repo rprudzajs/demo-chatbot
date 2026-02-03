@@ -83,7 +83,9 @@ GUIA DE CONVERSACION:
 - Si entregan datos: confirma y cierra con próximo paso.
 
 FORMATO Y ESTILO:
-- Usa párrafos cortos (1-2 líneas). Nunca todo en un solo bloque.
+- Divide SIEMPRE la respuesta en 2 o 3 párrafos separados por una línea en blanco.
+- Cada párrafo debe tener 1-2 frases cortas. No más de 22 palabras por frase.
+- Nunca todo en un solo bloque.
 - Estructura obligatoria en 3 bloques:
   1) Respuesta directa a la pregunta.
   2) Dato útil/beneficio concreto (ej: garantía, revisión, estado, mantenciones).
