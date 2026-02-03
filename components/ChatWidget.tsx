@@ -77,6 +77,28 @@ const ChatWidget: React.FC<ChatWidgetProps> = ({ initialCar }) => {
     return { cleanedText: cleanedText.trim(), labels };
   };
 
+  const formatAssistantText = (text: string) => {
+    const normalized = text.replace(/\s+/g, ' ').trim();
+    if (!normalized) return '';
+
+    let parts = normalized.split(/(?<=[.!?])\s+/).filter(Boolean);
+    const questions = parts.filter(part => part.includes('?'));
+    const nonQuestions = parts.filter(part => !part.includes('?'));
+    parts = [...nonQuestions, ...questions];
+
+    if (parts.length === 1 && parts[0].length > 140) {
+      const splitIndex = parts[0].search(/,\s+/);
+      if (splitIndex > 0) {
+        parts = [
+          parts[0].slice(0, splitIndex + 1).trim(),
+          parts[0].slice(splitIndex + 1).trim()
+        ];
+      }
+    }
+
+    return parts.join('\n\n');
+  };
+
   const handleSendMessage = async (customText?: string) => {
     const textToSend = customText || input;
     if (!textToSend.trim()) return;
@@ -99,9 +121,9 @@ const ChatWidget: React.FC<ChatWidgetProps> = ({ initialCar }) => {
       setMessages(prev => [...prev, {
         id: Date.now().toString(),
         role: 'model',
-        text: initError === 'missing_key'
-          ? 'No puedo responder porque falta `VITE_GEMINI_API_KEY`. Agrégala en Railway y vuelve a desplegar.'
-          : 'No puedo conectar con Gemini ahora. Intenta de nuevo en unos minutos.',
+        text: formatAssistantText(initError === 'missing_key'
+          ? 'No puedo responder porque falta VITE_GEMINI_API_KEY. Agrégala en Railway y vuelve a desplegar.'
+          : 'No puedo conectar con Gemini ahora. Intenta de nuevo en unos minutos.'),
         timestamp: new Date()
       }]);
       return;
@@ -126,7 +148,7 @@ const ChatWidget: React.FC<ChatWidgetProps> = ({ initialCar }) => {
         
         const { cleanedText } = parseContent(fullText);
         setMessages(prev => prev.map(msg => 
-          msg.id === botMsgId ? { ...msg, text: cleanedText } : msg
+          msg.id === botMsgId ? { ...msg, text: formatAssistantText(cleanedText) } : msg
         ));
       }
 
@@ -225,7 +247,7 @@ const ChatWidget: React.FC<ChatWidgetProps> = ({ initialCar }) => {
                     ? 'bg-[#0084FF] text-white' 
                     : 'bg-[#F0F2F5] text-black'
                 }`}>
-                  <p className="leading-snug">{msg.text}</p>
+                  <p className="leading-snug whitespace-pre-line">{msg.text}</p>
                 </div>
               </div>
             ))}
