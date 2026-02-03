@@ -23,14 +23,18 @@ const ChatWidget: React.FC<ChatWidgetProps> = ({ initialCar }) => {
   const [suggestions, setSuggestions] = useState<string[]>(['¿Sigue disponible?', '¿Aceptan permutas?', 'Ver financiamiento']);
   const [isTyping, setIsTyping] = useState(false);
   const [chatSession, setChatSession] = useState<Chat | null>(null);
+  const [useMockResponses, setUseMockResponses] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     try {
       const session = createCarChat();
       setChatSession(session);
+      setUseMockResponses(false);
     } catch (error) {
       console.error("Failed to initialize chat session", error);
+      setChatSession(null);
+      setUseMockResponses(true);
     }
   }, []);
 
@@ -67,9 +71,23 @@ const ChatWidget: React.FC<ChatWidgetProps> = ({ initialCar }) => {
     return { cleanedText: cleanedText.trim(), labels };
   };
 
+  const buildMockResponse = (text: string) => {
+    const normalized = text.toLowerCase();
+    if (normalized.includes('precio') || normalized.includes('valor')) {
+      return 'El precio publicado se mantiene vigente. ¿Quieres ver opciones de financiamiento? [SUGGESTIONS: "Ver financiamiento", "¿Aceptan permutas?", "¿Cuál es el kilometraje?"]';
+    }
+    if (normalized.includes('financia') || normalized.includes('credito')) {
+      return 'Podemos ofrecer alternativas de financiamiento según tu perfil. ¿Te muestro cuotas estimadas? [SUGGESTIONS: "Ver financiamiento", "¿Qué documentos piden?", "¿Aceptan permutas?"]';
+    }
+    if (normalized.includes('permuta') || normalized.includes('parte de pago')) {
+      return 'Sí, aceptamos permuta previa evaluación. ¿Qué vehículo tienes? [SUGGESTIONS: "Tengo un...", "¿Cómo es la evaluación?", "¿Hay costo?"]';
+    }
+    return 'Gracias por tu mensaje. Puedo ayudarte con disponibilidad, financiamiento y permutas. ¿Qué te interesa? [SUGGESTIONS: "¿Sigue disponible?", "Ver financiamiento", "¿Aceptan permutas?"]';
+  };
+
   const handleSendMessage = async (customText?: string) => {
     const textToSend = customText || input;
-    if (!textToSend.trim() || !chatSession) return;
+    if (!textToSend.trim()) return;
 
     if (!customText) setInput('');
     setSuggestions([]);
@@ -83,6 +101,30 @@ const ChatWidget: React.FC<ChatWidgetProps> = ({ initialCar }) => {
 
     setMessages(prev => [...prev, newUserMsg]);
     setIsTyping(true);
+
+    if (!chatSession || useMockResponses) {
+      const botMsgId = (Date.now() + 1).toString();
+      setMessages(prev => [...prev, {
+        id: botMsgId,
+        role: 'model',
+        text: '',
+        timestamp: new Date()
+      }]);
+
+      const reply = buildMockResponse(textToSend);
+      const { cleanedText, labels } = parseContent(reply);
+
+      setTimeout(() => {
+        setMessages(prev => prev.map(msg =>
+          msg.id === botMsgId ? { ...msg, text: cleanedText } : msg
+        ));
+        if (labels.length > 0) {
+          setSuggestions(labels);
+        }
+        setIsTyping(false);
+      }, 500);
+      return;
+    }
 
     try {
       const result = await chatSession.sendMessageStream({ message: textToSend });
