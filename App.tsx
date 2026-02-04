@@ -3,11 +3,12 @@ import React, { useState } from 'react';
 import Header from './components/Header';
 import CarCard from './components/CarCard';
 import ChatWidget from './components/ChatWidget';
-import { MOCK_CARS } from './constants';
+import { MOCK_CARS, LANGUAGE_OPTIONS, Language } from './constants';
 import { Car } from './types';
 
 const App: React.FC = () => {
   const [selectedCarForChat, setSelectedCarForChat] = useState<Car | null>(null);
+  const [language, setLanguage] = useState<Language | null>(null);
 
   const handleChatRequest = (car: Car) => {
     setSelectedCarForChat(car);
@@ -15,9 +16,32 @@ const App: React.FC = () => {
     setTimeout(() => setSelectedCarForChat(null), 100);
   };
 
+  if (!language) {
+    return (
+      <div className="min-h-screen bg-[#F0F2F5] flex items-center justify-center font-sans">
+        <div className="bg-white rounded-2xl shadow-xl border border-gray-200 w-[90%] max-w-md p-6">
+          <h1 className="text-xl font-bold text-gray-900">Selecciona idioma</h1>
+          <p className="text-sm text-gray-500 mt-1">Select language to test the demo</p>
+          <div className="mt-5 grid grid-cols-1 gap-3">
+            {LANGUAGE_OPTIONS.map(option => (
+              <button
+                key={option.code}
+                onClick={() => setLanguage(option.code)}
+                className="w-full border border-gray-200 hover:border-[#1877F2] hover:bg-[#F5F9FF] transition-colors rounded-xl px-4 py-3 text-left flex items-center gap-3"
+              >
+                <span className="text-xl">{option.flag}</span>
+                <span className="font-semibold text-gray-900">{option.label}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-[#F0F2F5] flex flex-col font-sans">
-      <Header />
+      <Header language={language} onLanguageChange={setLanguage} />
       
       <div className="flex flex-grow overflow-hidden">
         {/* Sidebar - Marketplace Left Nav */}
@@ -123,7 +147,7 @@ const App: React.FC = () => {
         </main>
       </div>
 
-      <ChatWidget initialCar={selectedCarForChat} />
+      <ChatWidget initialCar={selectedCarForChat} language={language} />
     </div>
   );
 };
