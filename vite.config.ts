@@ -9,8 +9,12 @@ export default defineConfig(() => {
         host: '0.0.0.0',
       },
       preview: {
-        host: true,
-        allowedHosts: 'all',
+        host: '0.0.0.0',
+        allowedHosts: [
+          'pleasant-contentment-production.up.railway.app',
+          'pleasant-contentment-production.up.railway.app:443',
+          'pleasant-contentment-production.up.railway.app:80'
+        ],
       },
       plugins: [react()],
       resolve: {
