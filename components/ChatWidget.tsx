@@ -2,36 +2,91 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Message, Car } from '../types';
 import { createCarChat, isGeminiConfigured } from '../services/geminiService';
+import { Language } from '../constants';
 import { Chat, GenerateContentResponse } from '@google/genai';
 
 interface ChatWidgetProps {
   initialCar?: Car | null;
+  language: Language;
 }
 
-const ChatWidget: React.FC<ChatWidgetProps> = ({ initialCar }) => {
+const ChatWidget: React.FC<ChatWidgetProps> = ({ initialCar, language }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [isExpanded, setIsExpanded] = useState(false);
   const [input, setInput] = useState('');
+  const getChatStrings = (lang: Language) => {
+    if (lang === 'en') {
+      return {
+        welcome: "Hi! Interested in this vehicle? It's available and ready for delivery.",
+        suggestions: ['See similar options', 'See all models', 'Search by budget', 'Car type'],
+        activeNow: 'Active now',
+        profile: 'View profile',
+        expertLabel: 'Used Car Specialist',
+        suggestedActions: 'Suggested actions',
+        placeholder: 'Type a message',
+        missingKey: 'I cannot respond because VITE_GEMINI_API_KEY is missing. Add it in Railway and redeploy.',
+        initFailed: 'I cannot connect to Gemini right now. Please try again in a few minutes.',
+        retry: 'Sorry, can you repeat that?',
+        initialQuery: (car: Car) => `Is the ${car.make} ${car.model} still available?`,
+      };
+    }
+    if (lang === 'nl') {
+      return {
+        welcome: 'Hoi! Interesse in dit voertuig? Het is beschikbaar en direct leverbaar.',
+        suggestions: ['Bekijk vergelijkbare opties', 'Bekijk alle modellen', 'Zoek op budget', 'Type auto'],
+        activeNow: 'Nu actief',
+        profile: 'Bekijk profiel',
+        expertLabel: 'Specialist in gebruikte auto’s',
+        suggestedActions: 'Aanbevolen acties',
+        placeholder: 'Typ een bericht',
+        missingKey: 'Ik kan niet antwoorden omdat VITE_GEMINI_API_KEY ontbreekt. Voeg het toe in Railway en deploy opnieuw.',
+        initFailed: 'Ik kan nu geen verbinding maken met Gemini. Probeer het later opnieuw.',
+        retry: 'Sorry, kun je dat herhalen?',
+        initialQuery: (car: Car) => `Is de ${car.make} ${car.model} nog beschikbaar?`,
+      };
+    }
+    return {
+      welcome: '¡Hola! ¿Te interesa este vehículo? Sigue disponible y listo para entrega inmediata.',
+      suggestions: ['Ver alternativas similares', 'Ver todos los modelos', 'Buscar por presupuesto', 'Tipo de auto'],
+      activeNow: 'Activo ahora',
+      profile: 'Ver perfil',
+      expertLabel: 'Marketplace Automotive Expert',
+      suggestedActions: 'Acciones sugeridas',
+      placeholder: 'Aa',
+      missingKey: 'No puedo responder porque falta VITE_GEMINI_API_KEY. Agrégala en Railway y vuelve a desplegar.',
+      initFailed: 'No puedo conectar con Gemini ahora. Intenta de nuevo en unos minutos.',
+      retry: 'Lo siento, ¿podrías repetir eso?',
+      initialQuery: (car: Car) => `¿Sigue disponible el ${car.make} ${car.model}?`,
+    };
+  };
+
+  const chatStrings = getChatStrings(language);
+
   const [messages, setMessages] = useState<Message[]>([
     {
       id: 'welcome',
       role: 'model',
-      text: "¡Hola! ¿Te interesa este vehículo? Sigue disponible y listo para entrega inmediata.",
+      text: chatStrings.welcome,
       timestamp: new Date()
     }
   ]);
-  const [suggestions, setSuggestions] = useState<string[]>([
-    'Ver alternativas similares',
-    'Ver todos los modelos',
-    'Buscar por presupuesto',
-    'Tipo de auto'
-  ]);
+  const [suggestions, setSuggestions] = useState<string[]>(chatStrings.suggestions);
   const [isTyping, setIsTyping] = useState(false);
   const [chatSession, setChatSession] = useState<Chat | null>(null);
   const [initError, setInitError] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    const nextStrings = getChatStrings(language);
+    setMessages([{
+      id: 'welcome',
+      role: 'model',
+      text: nextStrings.welcome,
+      timestamp: new Date()
+    }]);
+    setSuggestions(nextStrings.suggestions);
+    setInput('');
+
     if (!isGeminiConfigured()) {
       setChatSession(null);
       setInitError('missing_key');
@@ -39,7 +94,7 @@ const ChatWidget: React.FC<ChatWidgetProps> = ({ initialCar }) => {
     }
 
     try {
-      const session = createCarChat();
+      const session = createCarChat(language);
       setChatSession(session);
       setInitError(null);
     } catch (error) {
@@ -47,15 +102,15 @@ const ChatWidget: React.FC<ChatWidgetProps> = ({ initialCar }) => {
       setChatSession(null);
       setInitError('init_failed');
     }
-  }, []);
+  }, [language]);
 
   useEffect(() => {
     if (initialCar) {
       setIsOpen(true);
-      const initialQuery = `¿Sigue disponible el ${initialCar.make} ${initialCar.model}?`;
+      const initialQuery = getChatStrings(language).initialQuery(initialCar);
       handleSendMessage(initialQuery);
     }
-  }, [initialCar]);
+  }, [initialCar, language]);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -78,6 +133,7 @@ const ChatWidget: React.FC<ChatWidgetProps> = ({ initialCar }) => {
     
     cleanedText = cleanedText.replace(/\[SUGGESTIONS:\s*.*?\]/gi, '');
     cleanedText = cleanedText.replace(/Sugerencias:(\s*-\s*".*?")*/gi, '');
+    cleanedText = cleanedText.replace(/Suggestions:(\s*-\s*".*?")*/gi, '');
     
     return { cleanedText: cleanedText.trim(), labels };
   };
@@ -127,8 +183,8 @@ const ChatWidget: React.FC<ChatWidgetProps> = ({ initialCar }) => {
         id: Date.now().toString(),
         role: 'model',
         text: formatAssistantText(initError === 'missing_key'
-          ? 'No puedo responder porque falta VITE_GEMINI_API_KEY. Agrégala en Railway y vuelve a desplegar.'
-          : 'No puedo conectar con Gemini ahora. Intenta de nuevo en unos minutos.'),
+          ? chatStrings.missingKey
+          : chatStrings.initFailed),
         timestamp: new Date()
       }]);
       return;
@@ -166,7 +222,7 @@ const ChatWidget: React.FC<ChatWidgetProps> = ({ initialCar }) => {
       setMessages(prev => [...prev, {
         id: Date.now().toString(),
         role: 'model',
-        text: "Lo siento, ¿podrías repetir eso?",
+        text: chatStrings.retry,
         timestamp: new Date()
       }]);
     } finally {
@@ -206,7 +262,9 @@ const ChatWidget: React.FC<ChatWidgetProps> = ({ initialCar }) => {
               </div>
               <div>
                 <h4 className="font-bold text-[15px] text-gray-900 leading-tight">AutoExpert Ventas</h4>
-                <p className="text-[11px] text-gray-500 font-normal">Activo ahora</p>
+                <p className="text-[11px] text-gray-500 font-normal">
+                  {chatStrings.activeNow}
+                </p>
               </div>
             </div>
             <div className="flex items-center gap-3 text-[#0084FF]">
@@ -228,8 +286,8 @@ const ChatWidget: React.FC<ChatWidgetProps> = ({ initialCar }) => {
                 : 'bg-red-50 text-red-700 border-red-200'
             }`}>
               {initError === 'missing_key'
-                ? 'Gemini no está conectado: falta VITE_GEMINI_API_KEY en Railway.'
-                : 'Gemini no está disponible ahora. Intenta de nuevo en unos minutos.'}
+                ? chatStrings.missingKey
+                : chatStrings.initFailed}
             </div>
           )}
 
@@ -238,8 +296,10 @@ const ChatWidget: React.FC<ChatWidgetProps> = ({ initialCar }) => {
             <div className="flex flex-col items-center py-6 mb-4">
               <img src="https://picsum.photos/seed/expert/150/150" className="w-20 h-20 rounded-full mb-2 border border-gray-200" alt="Avatar Huge" />
               <h5 className="font-bold text-lg">AutoExpert Ventas</h5>
-              <p className="text-gray-500 text-sm">Marketplace Automotive Expert</p>
-              <button className="mt-3 text-xs font-bold bg-gray-100 px-4 py-1.5 rounded-lg hover:bg-gray-200 transition-colors">Ver perfil</button>
+              <p className="text-gray-500 text-sm">{chatStrings.expertLabel}</p>
+              <button className="mt-3 text-xs font-bold bg-gray-100 px-4 py-1.5 rounded-lg hover:bg-gray-200 transition-colors">
+                {chatStrings.profile}
+              </button>
             </div>
 
             {messages.map((msg) => (
@@ -260,7 +320,9 @@ const ChatWidget: React.FC<ChatWidgetProps> = ({ initialCar }) => {
             {/* Quick Action Buttons */}
             {suggestions.length > 0 && !isTyping && (
               <div className={`flex flex-col items-center gap-2 pt-4 pb-2 transition-all ${isExpanded ? 'max-w-md mx-auto' : 'px-8'}`}>
-                <p className="text-[11px] text-gray-400 font-bold uppercase tracking-wide mb-1">Acciones sugeridas</p>
+                <p className="text-[11px] text-gray-400 font-bold uppercase tracking-wide mb-1">
+                  {chatStrings.suggestedActions}
+                </p>
                 {suggestions.map((s, i) => (
                   <button
                     key={i}
@@ -301,7 +363,7 @@ const ChatWidget: React.FC<ChatWidgetProps> = ({ initialCar }) => {
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyPress={(e) => e.key === 'Enter' && handleSendMessage()}
-                placeholder="Aa"
+                placeholder={chatStrings.placeholder}
                 className="bg-transparent border-none outline-none text-[15px] w-full placeholder-gray-500 text-gray-900"
               />
               <i className="far fa-smile text-[#0084FF] ml-2 text-xl cursor-pointer hover:opacity-80"></i>

@@ -1,6 +1,6 @@
 
 import React from 'react';
-import { LANGUAGE_OPTIONS, Language } from '../constants';
+import { LANGUAGE_OPTIONS, Language, UI_STRINGS } from '../constants';
 
 interface HeaderProps {
   language: Language;
@@ -20,7 +20,7 @@ const Header: React.FC<HeaderProps> = ({ language, onLanguageChange }) => {
               <i className="fas fa-search text-gray-500 mr-2"></i>
               <input 
                 type="text" 
-                placeholder={language === 'en' ? 'Search Marketplace' : 'Buscar en Marketplace'} 
+                placeholder={UI_STRINGS[language].searchPlaceholder}
                 className="bg-transparent border-none outline-none text-sm w-full"
               />
             </div>

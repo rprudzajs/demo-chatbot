@@ -1,6 +1,6 @@
 
 import { GoogleGenAI, Chat } from "@google/genai";
-import { SYSTEM_INSTRUCTION } from "../constants";
+import { getSystemInstruction, Language } from "../constants";
 
 const getApiKey = () => {
   return (
@@ -20,12 +20,12 @@ const getAIClient = () => {
   return new GoogleGenAI({ apiKey });
 };
 
-export const createCarChat = (): Chat => {
+export const createCarChat = (language: Language): Chat => {
   const ai = getAIClient();
   return ai.chats.create({
     model: "gemini-3-flash-preview",
     config: {
-      systemInstruction: SYSTEM_INSTRUCTION,
+      systemInstruction: getSystemInstruction(language),
       temperature: 0.7,
       topP: 0.95,
       topK: 64,

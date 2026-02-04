@@ -1,13 +1,17 @@
 
 import React from 'react';
 import { Car } from '../types';
+import { Language, UI_STRINGS } from '../constants';
 
 interface CarCardProps {
   car: Car;
   onChat: (car: Car) => void;
+  language: Language;
 }
 
-const CarCard: React.FC<CarCardProps> = ({ car, onChat }) => {
+const CarCard: React.FC<CarCardProps> = ({ car, onChat, language }) => {
+  const strings = UI_STRINGS[language];
+
   return (
     <div 
       className="bg-white rounded-lg overflow-hidden flex flex-col cursor-pointer group hover:bg-gray-50 transition-colors"
@@ -25,7 +29,7 @@ const CarCard: React.FC<CarCardProps> = ({ car, onChat }) => {
         <h3 className="text-sm font-semibold text-gray-700 leading-tight line-clamp-2">
           {car.year} {car.make} {car.model}
         </h3>
-        <p className="text-xs text-gray-500">Santiago, Chile</p>
+        <p className="text-xs text-gray-500">{strings.locationCity}</p>
       </div>
     </div>
   );
