@@ -116,6 +116,10 @@ REGLAS ABSOLUTAS (nunca las rompas)
 4. FORMATO: Texto plano. Sin asteriscos, sin corchetes, sin markdown. URLs limpias: https://www.ald.cl/ficha/250702/ — nunca [link](url).
 5. Respuestas cortas: máx 3 párrafos, 2 frases cada uno. Separa párrafos con línea en blanco.
 6. Emojis: máx 1-2 por respuesta, solo para calidez.
+7. LISTAS DE AUTOS: Cuando muestres 2 o más autos, usa este formato exacto (un auto por línea, guión al inicio):
+- Nissan Navara XE 2022 · Diesel · AT · $21.990.000 → https://www.ald.cl/ficha/250226/
+- Mazda BT-50 SDX 2019 · Diesel · MT · $10.490.000 → https://www.ald.cl/ficha/224791/
+8. MEMORIA: Tienes el historial completo de esta conversación. NUNCA saludes de nuevo si ya lo hiciste antes. Si el cliente ya dijo algo antes, úsalo — no le preguntes lo mismo dos veces.
 
 ═══════════════════════════════════════
 CATEGORÍAS DEL INVENTARIO (úsalas para filtrar)
@@ -180,6 +184,20 @@ INVENTARIO COMPLETO
 ${_inventoryText}
 `.trim();
 
+/** Strip markdown formatting from Gemini replies (Messenger/WA are plain text) */
+function stripMarkdown(text) {
+  if (!text) return null;
+  return text
+    .replace(/\[([^\]]*)\]\(([^)]+)\)/g, '$2')   // [text](url) → url
+    .replace(/\*\*([^*]+)\*\*/g, '$1')            // **bold** → plain
+    .replace(/\*([^*]+)\*/g, '$1')                // *italic* → plain
+    .replace(/_{2}([^_]+)_{2}/g, '$1')            // __bold__ → plain
+    .replace(/_([^_]+)_/g, '$1')                  // _italic_ → plain
+    .replace(/`([^`]+)`/g, '$1')                  // `code` → plain
+    .replace(/#{1,6}\s+/g, '')                    // ## headers → plain
+    .trim();
+}
+
 // ── Session store (in-memory, resets on redeploy) ────────────────────────────
 const _sessions = new Map();
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000; // 24h — after this, same person = new lead row
@@ -202,6 +220,7 @@ function getSession(psid) {
       interestCategories: [],
       leadSent: false,
       crmLeadId: null,         // FullMotor CRM lead ID once created
+      history: [],             // [{role:'user'|'model', parts:[{text}]}] — Gemini multi-turn
     });
   }
   return _sessions.get(psid);
@@ -538,27 +557,25 @@ app.post('/api/make-messenger', express.json({ limit: '256kb' }), async (req, re
   let replySource = 'none';
   if (GEMINI_API_KEY) {
     try {
+      const session = getSession(psid);
       const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+      const contents = [
+        ...(session.history ?? []),
+        { role: 'user', parts: [{ text }] },
+      ];
       const response = await ai.models.generateContent({
         model: GEMINI_MODEL,
-        contents: text,
-        config: {
-          systemInstruction: MESSENGER_GEMINI_SYSTEM,
-          temperature: 0.7,
-        },
+        contents,
+        config: { systemInstruction: MESSENGER_GEMINI_SYSTEM, temperature: 0.7 },
       });
-      reply = response.text?.trim() || null;
+      reply = stripMarkdown(response.text?.trim() || null);
       if (reply) {
-        reply = reply
-          .replace(/\[([^\]]*)\]\(([^)]+)\)/g, '$2')
-          .replace(/\*\*([^*]+)\*\*/g, '$1')
-          .replace(/\*([^*]+)\*/g, '$1')
-          .replace(/_{2}([^_]+)_{2}/g, '$1')
-          .replace(/_([^_]+)_/g, '$1')
-          .replace(/`([^`]+)`/g, '$1')
-          .replace(/#{1,6}\s+/g, '')
-          .trim();
         replySource = 'gemini';
+        session.history = [
+          ...(session.history ?? []),
+          { role: 'user', parts: [{ text }] },
+          { role: 'model', parts: [{ text: reply }] },
+        ].slice(-20);
       }
     } catch (e) {
       console.error('[make-messenger] gemini', e);
@@ -682,24 +699,27 @@ async function handleMessengerWebhook(body) {
 
       if (GEMINI_API_KEY) {
         try {
+          const session = getSession(psid);
           const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+          // Build multi-turn contents: history + current user message
+          const contents = [
+            ...(session.history ?? []),
+            { role: 'user', parts: [{ text }] },
+          ];
           const response = await ai.models.generateContent({
             model: GEMINI_MODEL,
-            contents: text,
+            contents,
             config: { systemInstruction: MESSENGER_GEMINI_SYSTEM, temperature: 0.7 },
           });
-          reply = response.text?.trim() || null;
+          reply = stripMarkdown(response.text?.trim() || null);
           if (reply) {
-            reply = reply
-              .replace(/\[([^\]]*)\]\(([^)]+)\)/g, '$2')   // [text](url) → url
-              .replace(/\*\*([^*]+)\*\*/g, '$1')            // **bold** → bold
-              .replace(/\*([^*]+)\*/g, '$1')                // *italic* → italic
-              .replace(/_{2}([^_]+)_{2}/g, '$1')            // __bold__ → bold
-              .replace(/_([^_]+)_/g, '$1')                  // _italic_ → italic
-              .replace(/`([^`]+)`/g, '$1')                  // `code` → code
-              .replace(/#{1,6}\s+/g, '')                    // ## headers → plain
-              .trim();
             replySource = 'gemini';
+            // Append this turn to session history (keep last 20 turns max)
+            session.history = [
+              ...(session.history ?? []),
+              { role: 'user', parts: [{ text }] },
+              { role: 'model', parts: [{ text: reply }] },
+            ].slice(-20);
           }
         } catch (e) {
           console.error('[webhook gemini]', e);
