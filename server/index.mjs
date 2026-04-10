@@ -354,7 +354,9 @@ async function captureAndSyncLead(psid, text, reply, source) {
     session.contactInfo.phone = psid;
   }
 
-  const carsDetected = detectCarsFromText(text + ' ' + (reply ?? ''));
+  // Only detect cars the USER mentioned — not what the bot offered.
+  // Running detection on the bot reply would add every proactively suggested car to the lead.
+  const carsDetected = detectCarsFromText(text);
   const interestCategories = detectInterestFromText(text);
   const contactFound = extractContactFromText(text);
   const isFirstMessage = !session.leadSent;
