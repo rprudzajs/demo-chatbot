@@ -116,10 +116,14 @@ REGLAS ABSOLUTAS (nunca las rompas)
 4. FORMATO: Texto plano. Sin asteriscos, sin corchetes, sin markdown. URLs limpias: https://www.ald.cl/ficha/250702/ — nunca [link](url).
 5. Respuestas cortas: máx 3 párrafos, 2 frases cada uno. Separa párrafos con línea en blanco.
 6. Emojis: máx 1-2 por respuesta, solo para calidez.
-7. LISTAS DE AUTOS: Cuando muestres 2 o más autos, usa este formato exacto (un auto por línea, guión al inicio):
+7. LISTAS DE AUTOS: Cuando muestres 2 o más autos, SIEMPRE usa este formato exacto (un auto por línea, guión al inicio, sin texto extra antes de la lista):
 - Nissan Navara XE 2022 · Diesel · AT · $21.990.000 → https://www.ald.cl/ficha/250226/
 - Mazda BT-50 SDX 2019 · Diesel · MT · $10.490.000 → https://www.ald.cl/ficha/224791/
-8. MEMORIA: Tienes el historial completo de esta conversación. NUNCA saludes de nuevo si ya lo hiciste antes. Si el cliente ya dijo algo antes, úsalo — no le preguntes lo mismo dos veces.
+NUNCA escribas un auto como párrafo cuando hay más de uno. Siempre lista, siempre con guión.
+8. MEMORIA Y CONTINUIDAD: El historial completo de la conversación está arriba. Úsalo siempre.
+   - Si ya saludaste → NUNCA vuelvas a decir "¡Hola!" o "Hola [nombre]" ni nada parecido. Continúa directo al tema.
+   - Si el cliente ya mencionó su presupuesto, categoría o marca → no vuelvas a preguntar lo mismo.
+   - Si el cliente dice "ese", "ese que me mostraste", "el primero", "el Nissan", "me gusta la Mazda" → busca en el historial qué auto mencionaste y responde sobre ESE auto.
 
 ═══════════════════════════════════════
 CATEGORÍAS DEL INVENTARIO (úsalas para filtrar)
@@ -161,9 +165,12 @@ Muestra 2-3 opciones concretas de esa categoría con precio y año. No hagas má
 CUANDO EL CLIENTE DA CATEGORÍA + MARCA:
 Filtra al cruce exacto. Si hay 1 solo resultado, muéstralo con detalle completo (ficha, precio, km, transmisión). Si no hay ninguno, dilo honestamente y ofrece alternativas similares.
 
-CUANDO EL CLIENTE DA SOLO UNA MARCA (sin categoría):
+CUANDO EL CLIENTE MENCIONA UN AUTO QUE YA OFRECISTE:
+Si el cliente dice "me gusta la Mazda", "me interesa ese", "cuéntame más del Nissan", etc. refiriéndose a un auto que TÚ ya mencionaste en la conversación — NO preguntes qué tipo busca. Ya sabes exactamente a cuál se refiere. Muéstrale la ficha completa de ESE auto: precio, km, transmisión, combustible, y link. Luego ofrece agendar una visita.
+
+CUANDO EL CLIENTE DA SOLO UNA MARCA (sin haber visto opciones antes y sin categoría establecida):
 NUNCA listes todos los autos de esa marca — son tipos muy distintos y eso confunde.
-Primero pregunta: "¿Qué tipo de vehículo buscas en Mazda — camioneta, SUV, sedán?"
+Primero pregunta: "¿Qué tipo de vehículo buscas — camioneta, SUV, sedán?"
 Si ya se estableció una categoría antes en la conversación, úsala directamente para filtrar.
 
 CUANDO EL CLIENTE TIENE PRESUPUESTO:
@@ -774,24 +781,29 @@ async function handleWhatsAppWebhook(body) {
 
         if (GEMINI_API_KEY) {
           try {
+            const waSession = getSession(from);
+            // Pre-seed phone from the WA number on first message
+            if (!waSession.contactInfo) {
+              waSession.contactInfo = { phone: from };
+            }
             const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+            const contents = [
+              ...(waSession.history ?? []),
+              { role: 'user', parts: [{ text }] },
+            ];
             const response = await ai.models.generateContent({
               model: GEMINI_MODEL,
-              contents: text,
+              contents,
               config: { systemInstruction: MESSENGER_GEMINI_SYSTEM, temperature: 0.7 },
             });
-            reply = response.text?.trim() || null;
+            reply = stripMarkdown(response.text?.trim() || null);
             if (reply) {
-              reply = reply
-                .replace(/\[([^\]]*)\]\(([^)]+)\)/g, '$2')
-                .replace(/\*\*([^*]+)\*\*/g, '$1')
-                .replace(/\*([^*]+)\*/g, '$1')
-                .replace(/_{2}([^_]+)_{2}/g, '$1')
-                .replace(/_([^_]+)_/g, '$1')
-                .replace(/`([^`]+)`/g, '$1')
-                .replace(/#{1,6}\s+/g, '')
-                .trim();
               replySource = 'gemini';
+              waSession.history = [
+                ...(waSession.history ?? []),
+                { role: 'user', parts: [{ text }] },
+                { role: 'model', parts: [{ text: reply }] },
+              ].slice(-20);
             }
           } catch (e) {
             console.error('[whatsapp gemini]', e);
