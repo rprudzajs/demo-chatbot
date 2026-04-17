@@ -7,16 +7,26 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview --host 0.0.0.0 --port $PORT",
-    "start": "vite preview --host 0.0.0.0 --port $PORT"
+    "start": "node server/index.mjs",
+    "deploy:railway": "railway up",
+    "scrape:ald": "node scripts/scrape-ald-site.mjs",
+    "scrape:ald:fresh": "SCRAPE_CLEAN=1 node scripts/scrape-ald-site.mjs",
+    "scrape:ald:merge": "node scripts/merge-scraped-to-corpus.mjs",
+    "scrape:ald:report": "node scripts/ald-inventory-report.mjs",
+    "scrape:ald:stock": "node scripts/scraped-pages-to-ald-stock.mjs",
+    "mirror:inventory-images": "node scripts/mirror-inventory-images.mjs"
   },
   "dependencies": {
+    "@google/genai": "^1.39.0",
+    "express": "^5.1.0",
     "react": "^19.2.4",
-    "react-dom": "^19.2.4",
-    "@google/genai": "^1.39.0"
+    "react-dom": "^19.2.4"
   },
   "devDependencies": {
+    "@railway/cli": "^4.0.0",
     "@types/node": "^22.14.0",
     "@vitejs/plugin-react": "^5.0.0",
+    "playwright": "^1.51.0",
     "typescript": "~5.8.2",
     "vite": "^6.2.0"
   }

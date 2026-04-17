@@ -1,57 +1,94 @@
 
 import React from 'react';
-import { LANGUAGE_OPTIONS, Language, UI_STRINGS } from '../constants';
+import { UI_STRINGS, ALD_LAYOUT } from '../constants';
+import { CLIENT_BRAND } from '../client/clientBrand';
 
 interface HeaderProps {
-  language: Language;
-  onLanguageChange: (language: Language) => void;
+  /** Opens the on-page Messenger-style sales assistant. */
+  onOpenChat: () => void;
 }
 
-const Header: React.FC<HeaderProps> = ({ language, onLanguageChange }) => {
+const Header: React.FC<HeaderProps> = ({ onOpenChat }) => {
+  const ald = ALD_LAYOUT.es;
+  const navItems = [
+    { key: 'home', label: ald.navHome, active: false },
+    { key: 'stock', label: ald.navStock, active: true },
+    { key: 'cons', label: ald.navConsignment, active: false },
+    { key: 'fin', label: ald.navFinancing, active: false },
+    { key: 'contact', label: ald.navContact, active: false },
+  ];
+
   return (
-    <header className="bg-white border-b border-gray-200 sticky top-0 z-40 h-14 flex items-center shadow-sm">
-      <div className="w-full px-4 flex justify-between items-center">
-        <div className="flex items-center gap-2">
-          <div className="bg-[#1877F2] w-10 h-10 rounded-full flex items-center justify-center text-white text-2xl font-bold">
-            f
-          </div>
-          <div className="relative hidden sm:block">
-            <div className="bg-[#F0F2F5] rounded-full flex items-center px-3 py-2 w-64 border border-transparent focus-within:border-blue-400">
-              <i className="fas fa-search text-gray-500 mr-2"></i>
-              <input 
-                type="text" 
-                placeholder={UI_STRINGS[language].searchPlaceholder}
-                className="bg-transparent border-none outline-none text-sm w-full"
+    <header className="sticky top-0 z-40 flex flex-col shadow-md">
+      <div
+        className="flex flex-col sm:flex-row sm:items-stretch sm:justify-between gap-3 px-4 py-3 sm:py-2"
+        style={{ backgroundColor: CLIENT_BRAND.inkHex }}
+      >
+        <div className="flex items-center gap-3 min-w-0">
+          {CLIENT_BRAND.logoUrl ? (
+            <img
+              src={CLIENT_BRAND.logoUrl}
+              alt="ALD"
+              className="h-10 sm:h-12 object-contain"
+              referrerPolicy="no-referrer"
+            />
+          ) : (
+            <div className="flex flex-col gap-0.5">
+              <span
+                className="text-3xl sm:text-4xl font-black tracking-tighter leading-none"
+                style={{ color: CLIENT_BRAND.accentRedHex }}
+              >
+                ALD
+              </span>
+              <p className="text-[8px] sm:text-[9px] text-white/90 uppercase tracking-wide leading-tight">
+                <span className="block">{ald.ownersLine1}</span>
+                <span className="block">{ald.ownersLine2}</span>
+              </p>
+            </div>
+          )}
+        </div>
+        <div className="flex items-center justify-end gap-2 sm:ml-auto">
+          <button
+            type="button"
+            onClick={onOpenChat}
+            className="flex items-center gap-2 rounded-lg px-3 py-2 text-xs sm:text-sm font-bold text-white border border-white/25 hover:bg-white/10 transition-colors shrink-0"
+            aria-label={ald.chatCta}
+          >
+            <i className="fab fa-facebook-messenger text-base sm:text-lg" aria-hidden />
+            <span className="hidden sm:inline">{ald.chatCta}</span>
+          </button>
+        </div>
+      </div>
+
+      <nav className="bg-white border-b border-gray-200 px-2 sm:px-6">
+        <ul className="flex flex-wrap justify-center gap-1 sm:gap-6 py-2.5 text-[11px] sm:text-xs font-bold tracking-wide">
+          {navItems.map((item) => (
+            <li key={item.key}>
+              <button
+                type="button"
+                className={`px-2 py-1 rounded transition-colors ${
+                  item.active ? '' : 'text-gray-700 hover:text-black'
+                }`}
+                style={item.active ? { color: CLIENT_BRAND.accentRedHex } : undefined}
+              >
+                {item.label}
+              </button>
+            </li>
+          ))}
+        </ul>
+      </nav>
+
+      <div className="bg-white border-b border-gray-100 px-3 py-2 hidden md:block">
+        <div className="max-w-6xl mx-auto flex items-center justify-center gap-4 lg:gap-8 overflow-x-auto">
+          <div className="relative hidden sm:block flex-1 max-w-xs">
+            <div className="bg-gray-100 rounded-md flex items-center px-3 py-2 border border-gray-200">
+              <i className="fas fa-search text-gray-400 mr-2 text-sm" />
+              <input
+                type="text"
+                placeholder={UI_STRINGS.es.searchPlaceholder}
+                className="bg-transparent border-none outline-none text-xs w-full text-gray-800 placeholder:text-gray-400"
               />
             </div>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-1 sm:gap-2">
-          <div className="hidden sm:block">
-            <select
-              value={language}
-              onChange={(event) => onLanguageChange(event.target.value as Language)}
-              className="bg-[#F0F2F5] text-gray-800 text-xs font-semibold rounded-full px-3 py-2 border border-transparent hover:border-gray-300 focus:outline-none"
-            >
-              {LANGUAGE_OPTIONS.map(option => (
-                <option key={option.code} value={option.code}>
-                  {option.flag} {option.label}
-                </option>
-              ))}
-            </select>
-          </div>
-          <button className="w-10 h-10 rounded-full bg-[#F0F2F5] flex items-center justify-center hover:bg-gray-200 transition-colors">
-            <i className="fas fa-th text-gray-700"></i>
-          </button>
-          <button className="w-10 h-10 rounded-full bg-[#F0F2F5] flex items-center justify-center hover:bg-gray-200 transition-colors">
-            <i className="fab fa-facebook-messenger text-gray-700"></i>
-          </button>
-          <button className="w-10 h-10 rounded-full bg-[#F0F2F5] flex items-center justify-center hover:bg-gray-200 transition-colors">
-            <i className="fas fa-bell text-gray-700"></i>
-          </button>
-          <div className="w-10 h-10 rounded-full bg-gray-300 border border-gray-100 overflow-hidden ml-1">
-            <img src="https://picsum.photos/seed/user/100/100" alt="Avatar" className="w-full h-full object-cover" />
           </div>
         </div>
       </div>

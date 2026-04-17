@@ -1,0 +1,9 @@
+# Railway: https://railway.app — connect repo, set GEMINI_API_KEY (+ optional VITE_LEADS_WEBHOOK_URL), deploy.
+# Railpack runs `npm run build` then `npm start` runs `node server/index.mjs` (static `dist/` + POST /webhook for Meta).
+
+[deploy]
+# Explicit Node entry (not Caddy static/SPA). railpack.json matches for Railpack merges.
+startCommand = "node server/index.mjs"
+healthcheckPath = "/"
+healthcheckTimeout = 100
+restartPolicyType = "ON_FAILURE"

@@ -1,0 +1,2 @@
+title,description,price,image,vehicle_id,url,address,make,model,year,mileage.value,mileage.unit,body_style,state_of_vehicle
+"2019 Toyota Corolla LE — demo","Demo vehicle row for Meta Commerce. Used compact sedan, automatic. Contact dealer for details and test drive.",14990.00 USD,https://images.unsplash.com/photo-1549317661-bd32c8ce0db2?auto=format&fit=crop&w=1200&q=80,ald-demo-car-001,https://pontexus.app/,"Comandante Malbec 13495, Lo Barnechea, Santiago, Chile",Toyota,Corolla LE,2019,45000,KILOMETERS,SEDAN,USED

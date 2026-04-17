@@ -1,10 +1,14 @@
-
 import { Car } from './types';
+import { getClientKnowledgeBlock } from './client/clientKnowledge';
+import aldStockBase from './data/ald-stock-base.json';
+import { buildDemoStock } from './data/demoStock';
+
+const DEMO_STOCK_TARGET = Number(import.meta.env.VITE_DEMO_STOCK_COUNT ?? 95);
 
 export type Language = 'es' | 'en' | 'nl';
 
 export const LANGUAGE_OPTIONS: { code: Language; label: string; flag: string }[] = [
-  { code: 'es', label: 'Español', flag: '🇪🇸' },
+  { code: 'es', label: 'Español', flag: '🇨🇱' },
   { code: 'en', label: 'English', flag: '🇺🇸' },
   { code: 'nl', label: 'Nederlands', flag: '🇳🇱' }
 ];
@@ -29,21 +33,21 @@ export const UI_STRINGS: Record<Language, {
   languageSubtitle: string;
 }> = {
   es: {
-    marketplace: 'Marketplace',
-    searchPlaceholder: 'Buscar en Marketplace',
+    marketplace: 'Stock',
+    searchPlaceholder: 'Buscar en stock',
     exploreAll: 'Explorar todo',
     notifications: 'Notificaciones',
     inbox: 'Bandeja de entrada',
     buy: 'Compra',
     sell: 'Venta',
     filters: 'Filtros',
-    locationRadius: 'Santiago de Chile · 60 km',
+    locationRadius: 'Lo Barnechea · Región Metropolitana',
     categories: 'Categorías',
     vehicles: 'Vehículos',
     rentals: 'Alquileres',
-    selectionsToday: 'Selecciones de hoy en Santiago',
+    selectionsToday: 'Destacados del stock (ALD Autos)',
     viewMoreItems: 'Ver más artículos',
-    locationCity: 'Santiago, Chile',
+    locationCity: 'Lo Barnechea, Chile',
     languageTitle: 'Selecciona idioma',
     languageSubtitle: 'Select language to test the demo'
   },
@@ -56,13 +60,13 @@ export const UI_STRINGS: Record<Language, {
     buy: 'Buy',
     sell: 'Sell',
     filters: 'Filters',
-    locationRadius: 'Santiago, Chile · 60 km',
+    locationRadius: 'Lo Barnechea · Santiago metro area',
     categories: 'Categories',
     vehicles: 'Vehicles',
     rentals: 'Rentals',
-    selectionsToday: 'Today’s picks in Santiago',
+    selectionsToday: 'Stock highlights (ALD Autos)',
     viewMoreItems: 'See more items',
-    locationCity: 'Santiago, Chile',
+    locationCity: 'Lo Barnechea, Chile',
     languageTitle: 'Select language',
     languageSubtitle: 'Selecciona idioma para probar el demo'
   },
@@ -75,85 +79,183 @@ export const UI_STRINGS: Record<Language, {
     buy: 'Kopen',
     sell: 'Verkopen',
     filters: 'Filters',
-    locationRadius: 'Santiago, Chili · 60 km',
+    locationRadius: 'Lo Barnechea · regio Santiago',
     categories: 'Categorieën',
     vehicles: 'Voertuigen',
     rentals: 'Verhuur',
-    selectionsToday: 'Selecties van vandaag in Santiago',
+    selectionsToday: 'Stock-highlights (ALD Autos)',
     viewMoreItems: 'Meer items bekijken',
-    locationCity: 'Santiago, Chili',
+    locationCity: 'Lo Barnechea, Chili',
     languageTitle: 'Kies taal',
     languageSubtitle: 'Select language to test the demo'
   }
 };
 
-export const MOCK_CARS: Car[] = [
-  {
-    id: '1',
-    make: 'Toyota',
-    model: 'Corolla LE',
-    year: 2021,
-    price: 18900,
-    mileage: 42000,
-    fuelType: 'Gasolina',
-    transmission: 'Automática',
-    color: 'Blanco',
-    description: 'Impecable Toyota Corolla 2021. Único dueño, todos los mantenimientos en agencia. Muy económico y confiable.',
-    imageUrl: '/images/cars/corolla.png',
-    features: ['Cámara de reversa', 'Apple CarPlay', 'Alerta de carril', 'Control crucero']
+/** Layout copy for the ald.cl-style shell (nav, filters, body-type strip). */
+export const ALD_LAYOUT: Record<Language, {
+  navHome: string;
+  navStock: string;
+  navConsignment: string;
+  navFinancing: string;
+  navContact: string;
+  filtersTitle: string;
+  fTipo: string;
+  fMarca: string;
+  fModelo: string;
+  fAnio: string;
+  fPrecio: string;
+  fTrans: string;
+  fComb: string;
+  fOrden: string;
+  vehiclesForSaleTpl: string;
+  demoBadge: string;
+  /** Header / stock CTA — opens the on-site Messenger-style chat. */
+  chatCta: string;
+  /** One line above the grid: explains Messenger-style quick replies. */
+  chatStockHint: string;
+  justArrived: string;
+  ownersLine1: string;
+  ownersLine2: string;
+  selectPrompt: string;
+  bodyTypes: { label: string }[];
+}> = {
+  es: {
+    navHome: 'INICIO',
+    navStock: 'SEMINUEVOS',
+    navConsignment: 'CONSIGNACION',
+    navFinancing: 'FINANCIAMIENTO',
+    navContact: 'CONTACTO',
+    filtersTitle: 'FILTROS DE BÚSQUEDA',
+    fTipo: 'TIPO',
+    fMarca: 'MARCA',
+    fModelo: 'MODELO',
+    fAnio: 'AÑO DESDE',
+    fPrecio: 'PRECIO HASTA',
+    fTrans: 'TRANSMISIÓN',
+    fComb: 'COMBUSTIBLE',
+    fOrden: 'ORDENAR POR',
+    vehiclesForSaleTpl: '{count} vehículos en venta',
+    demoBadge: 'Demo de interfaz',
+    chatCta: 'Chatear',
+    chatStockHint: '¿Dudas? Abre el chat (como Messenger), toca una opción sugerida o escribe. Te ayudamos a comprar y resolvemos lo clásico: precio, financiamiento, visita y permuta.',
+    justArrived: 'RECIÉN LLEGADO',
+    ownersLine1: 'EDUARDO BARTHOLOMÄUS R.',
+    ownersLine2: 'MAXIMILIANO MONTES G.',
+    selectPrompt: 'Seleccionar',
+    bodyTypes: [
+      { label: 'SEDAN' }, { label: 'COUPE' }, { label: 'CONVERTIBLE' },
+      { label: 'HATCHBACK' }, { label: 'CAMIONETA' }, { label: 'SUV' },
+    ],
   },
-  {
-    id: '2',
-    make: 'Ford',
-    model: 'F-150 Lariat',
-    year: 2017,
-    price: 26500,
-    mileage: 78000,
-    fuelType: 'Gasolina',
-    transmission: 'Automática',
-    color: 'Azul',
-    description: 'Ford F-150 Lariat 4x4. Motor EcoBoost, asientos de cuero y techo panorámico. Lista para el trabajo o la aventura.',
-    imageUrl: '/images/cars/f150.jpg',
-    features: ['Tracción 4x4', 'Asientos con calefacción', 'Techo panorámico', 'Paquete de arrastre']
+  en: {
+    navHome: 'HOME',
+    navStock: 'PRE-OWNED',
+    navConsignment: 'CONSIGNMENT',
+    navFinancing: 'FINANCING',
+    navContact: 'CONTACT',
+    filtersTitle: 'SEARCH FILTERS',
+    fTipo: 'TYPE',
+    fMarca: 'MAKE',
+    fModelo: 'MODEL',
+    fAnio: 'YEAR FROM',
+    fPrecio: 'PRICE UP TO',
+    fTrans: 'TRANSMISSION',
+    fComb: 'FUEL',
+    fOrden: 'SORT BY',
+    vehiclesForSaleTpl: '{count} vehicles for sale',
+    demoBadge: 'UI demo',
+    chatCta: 'Chat',
+    chatStockHint: 'Questions? Open chat (Messenger-style), tap a suggested option or type. We help you buy and cover the usual topics: price, financing, visits, and trade-in.',
+    justArrived: 'JUST ARRIVED',
+    ownersLine1: 'EDUARDO BARTHOLOMÄUS R.',
+    ownersLine2: 'MAXIMILIANO MONTES G.',
+    selectPrompt: 'Select',
+    bodyTypes: [
+      { label: 'SEDAN' }, { label: 'COUPE' }, { label: 'CONVERTIBLE' },
+      { label: 'HATCHBACK' }, { label: 'PICKUP' }, { label: 'SUV' },
+    ],
   },
-  {
-    id: '3',
-    make: 'Tesla',
-    model: 'Model 3',
-    year: 2020,
-    price: 31000,
-    mileage: 28000,
-    fuelType: 'Eléctrico',
-    transmission: 'Automática',
-    color: 'Negro',
-    description: 'Tesla Model 3 Long Range en negro sólido. Autopilot habilitado, estado de batería excelente. Cero emisiones.',
-    imageUrl: '/images/cars/model3.jpg',
-    features: ['Autopilot', 'Pantalla 15"', 'Techo de cristal', 'Supercarga habilitada']
+  nl: {
+    navHome: 'HOME',
+    navStock: 'TWEEDEHANDS',
+    navConsignment: 'CONSIGNATIE',
+    navFinancing: 'FINANCIERING',
+    navContact: 'CONTACT',
+    filtersTitle: 'ZOEKFILTERS',
+    fTipo: 'TYPE',
+    fMarca: 'MERK',
+    fModelo: 'MODEL',
+    fAnio: 'JAAR VANAF',
+    fPrecio: 'PRIJS TOT',
+    fTrans: 'TRANSMISSIE',
+    fComb: 'BRANDSTOF',
+    fOrden: 'SORTEER OP',
+    vehiclesForSaleTpl: '{count} voertuigen te koop',
+    demoBadge: 'Interface-demo',
+    chatCta: 'Chat',
+    chatStockHint: 'Vragen? Open de chat (Messenger-stijl), tik op een optie of typ. We helpen je kopen: prijs, financiering, bezoek en inruil.',
+    justArrived: 'NET BINNEN',
+    ownersLine1: 'EDUARDO BARTHOLOMÄUS R.',
+    ownersLine2: 'MAXIMILIANO MONTES G.',
+    selectPrompt: 'Kiezen',
+    bodyTypes: [
+      { label: 'SEDAN' }, { label: 'COUPE' }, { label: 'CABRIO' },
+      { label: 'HATCHBACK' }, { label: 'PICKUP' }, { label: 'SUV' },
+    ],
   },
-  {
-    id: '4',
-    make: 'Jeep',
-    model: 'Wrangler Sport',
-    year: 2018,
-    price: 29500,
-    mileage: 55000,
-    fuelType: 'Gasolina',
-    transmission: 'Manual',
-    color: 'Rojo',
-    description: 'Jeep Wrangler Sport Rojo. Techo blando, 4x4 real. Perfecto para los amantes del off-road y la libertad.',
-    imageUrl: '/images/cars/wrangler.png',
-    features: ['Tracción 4WD', 'Bluetooth', 'Llantas Off-Road', 'Techo removible']
-  }
-];
+};
 
-const INVENTORY_TEXT = MOCK_CARS.map(car => `
-- ${car.year} ${car.make} ${car.model}: $${car.price.toLocaleString()}
-  KM: ${car.mileage.toLocaleString()} km
-  Transmisión: ${car.transmission}, Color: ${car.color}
-`).join('\n');
+/** Full grid: real rows from `data/ald-stock-base.json` + optional pad to `VITE_DEMO_STOCK_COUNT` (default 95). */
+export const MOCK_CARS: Car[] = buildDemoStock(aldStockBase as Car[], DEMO_STOCK_TARGET);
+
+export const STOCK_STATS = {
+  total: MOCK_CARS.length,
+  real: MOCK_CARS.filter((c) => !c.isDemoFiller).length,
+  filler: MOCK_CARS.filter((c) => c.isDemoFiller).length,
+};
+
+const formatInventoryPrice = (car: Car) => {
+  if (car.currency === 'CLP') {
+    return new Intl.NumberFormat('es-CL', {
+      style: 'currency',
+      currency: 'CLP',
+      maximumFractionDigits: 0,
+    }).format(car.price);
+  }
+  return `$${car.price.toLocaleString('en-US')}`;
+};
+
+const INVENTORY_TEXT = (() => {
+  const realCars = MOCK_CARS.filter((c) => !c.isDemoFiller);
+  const shown = realCars.length > 0 ? realCars : MOCK_CARS;
+  const body = shown
+    .map((car) => {
+      const notes = [car.listHeadline, car.listSubtitle].filter(Boolean).join(' · ');
+      const numericId = car.id.replace(/^ald-/, '');
+      const fichaUrl = `https://www.ald.cl/ficha/${numericId}/`;
+      const noteLine = notes ? `\n  Notas listado: ${notes}` : '';
+      return `
+- ${car.year} ${car.make} ${car.model} (id ${numericId}): ${formatInventoryPrice(car)}
+  KM: ${car.mileage.toLocaleString('es-CL')} km · Transmisión: ${car.transmission} · Combustible: ${car.fuelType}
+  Ficha: ${fichaUrl}${noteLine}`;
+    })
+    .join('\n');
+  const total = MOCK_CARS.length;
+  const real = MOCK_CARS.filter((c) => !c.isDemoFiller).length;
+  const filler = total - real;
+  const tail =
+    filler > 0
+      ? `
+
+Resumen: ${total} filas en la UI (${real} unidades reales sincronizadas desde ald.cl + ${filler} filas demo de paginación). Solo uses precios y datos de las unidades listadas arriba; no inventes para las filas demo.`
+      : `
+
+Resumen: inventario completo (${real} unidades). Solo cites precios, km y datos de esta lista; si falta algo, ofrece confirmación con un ejecutivo o en la ficha web.`;
+  return body + tail;
+})();
 
 const SYSTEM_INSTRUCTION_ES = `
-Eres "AutoExpert Ventas", un especialista en autos usados que atiende leads de Facebook Marketplace. Tu objetivo es convertir el interés en un contacto real (nombre, teléfono y/o email) y, si es posible, agendar una visita o prueba de manejo.
+Eres el asistente de ventas de ALD Autos (seminuevos, stock en ald.cl). Atiendes leads estilo Marketplace / web / Messenger. Tu objetivo es convertir el interés en un contacto real (nombre, teléfono y/o email) y, si es posible, agendar una visita o prueba de manejo.
 
 REGLAS DE ORO:
 1. IDIOMA: Responde SIEMPRE en Español.
@@ -161,6 +263,13 @@ REGLAS DE ORO:
 3. CLARIDAD: Respuestas cortas (2-4 líneas), sin repetición.
 4. EMOJIS: Úsalos con moderación para dar calidez (1-2 max por respuesta). Evita exceso.
 5. BOTONES: Al final de cada respuesta, añade [SUGGESTIONS: Opción 1, Opción 2, Opción 3]. Nunca escribas "Sugerencias:" en el texto visible.
+
+CANAL (Messenger / web / Meta — mismo enfoque que ManyChat/Chatfuel):
+- Cada [SUGGESTIONS: ...] equivale a quick replies: opciones cortas que el usuario puede tocar para seguir el flujo.
+- Rutas típicas: ver stock / presupuesto, financiamiento y pie, visita o prueba de manejo, permuta o “compramos tu auto”, hablar con una persona (teléfono/WhatsApp del sitio).
+- En exploración: empuja suavemente hacia elegir 1–2 autos del inventario o dejar nombre + WhatsApp para que el equipo cotice.
+- Nunca inventes políticas; horarios, dirección y teléfonos solo desde el bloque de conocimiento del cliente al final del system prompt.
+- Inventario: usa únicamente autos y precios del bloque "Inventario Actual" más abajo (y sus enlaces a ficha). No inventes vehículos ni cifras que no aparezcan ahí.
 
 OBJETIVO COMERCIAL:
 - Detecta intención y pregunta lo mínimo necesario para avanzar (disponibilidad, precio, financiamiento, permuta, ubicación).
@@ -198,7 +307,7 @@ ${INVENTORY_TEXT}
 `;
 
 const SYSTEM_INSTRUCTION_EN = `
-You are "AutoExpert Sales", a used-car specialist handling Facebook Marketplace leads. Your goal is to turn interest into real contact info (name, phone/WhatsApp and/or email) and, if possible, book a visit or test drive.
+You are the ALD Autos sales assistant (used / pre-owned vehicles, ald.cl — Chile). You handle Marketplace-style, website, and Messenger leads. Your goal is to turn interest into real contact info (name, phone/WhatsApp and/or email) and, if possible, book a visit or test drive.
 
 GOLDEN RULES:
 1. LANGUAGE: Always reply in English.
@@ -206,6 +315,13 @@ GOLDEN RULES:
 3. CLARITY: Short replies (2-4 lines), no repetition.
 4. EMOJIS: Use sparingly for warmth (max 1-2 per reply).
 5. BUTTONS: End every reply with [SUGGESTIONS: Option 1, Option 2, Option 3]. Never write "Suggestions:" in visible text.
+
+CHANNEL (Messenger / website / Meta — same pattern as ManyChat-style bots):
+- Each [SUGGESTIONS: ...] acts like Messenger quick replies: short tappable next steps.
+- Typical paths: browse stock / budget, financing & down payment, visit or test drive, trade-in / “we buy your car”, talk to a human (use site phone/WhatsApp from client knowledge).
+- When browsing: gently steer toward picking 1–2 cars from inventory or leaving name + WhatsApp for the team.
+- Never invent policies; hours, address, and phones only from the client knowledge block at the end of this prompt.
+- Inventory: only reference vehicles and prices from the "Current Inventory" block below (and its ficha URLs). Do not invent cars or numbers not listed there.
 
 SALES GOAL:
 - Detect intent and ask only what is needed (availability, price, financing, trade-in, location).
@@ -243,7 +359,7 @@ ${INVENTORY_TEXT}
 `;
 
 const SYSTEM_INSTRUCTION_NL = `
-Je bent "AutoExpert Sales", een specialist in tweedehands auto's die leads van Facebook Marketplace helpt. Je doel is interesse omzetten in echte contactgegevens (naam, telefoon/WhatsApp en/of e‑mail) en, indien mogelijk, een bezoek of proefrit plannen.
+Je bent de verkoopassistent van ALD Autos (gebruikte auto's, ald.cl — Chili). Je helpt leads van Marketplace-stijl, website en Messenger. Je doel is interesse omzetten in echte contactgegevens (naam, telefoon/WhatsApp en/of e‑mail) en, indien mogelijk, een bezoek of proefrit plannen.
 
 GOUDEN REGELS:
 1. TAAL: Antwoord altijd in het Nederlands.
@@ -251,6 +367,13 @@ GOUDEN REGELS:
 3. HELDERHEID: Korte antwoorden (2-4 regels), zonder herhaling.
 4. EMOJI'S: Spaarzaam gebruiken (max 1-2 per antwoord).
 5. KNOPPEN: Eindig elk antwoord met [SUGGESTIONS: Optie 1, Optie 2, Optie 3]. Schrijf nooit "Suggesties:" in de zichtbare tekst.
+
+KANAAL (Messenger / web / Meta — zelfde aanpak als quick-reply bots):
+- Elke [SUGGESTIONS: ...] werkt als snelle antwoordknoppen.
+- Typische paden: voorraad/budget, financiering en aanbetaling, bezoek of proefrit, inruil, doorverbinden naar een mens (telefoon/WhatsApp uit klantkennis).
+- Bij oriëntatie: zachtjes sturen naar 1–2 auto’s uit de lijst of naam + WhatsApp achterlaten.
+- Geen verzonnen beleid; openingstijden en contact alleen uit het klantkennisblok onderaan.
+- Voorraad: gebruik alleen auto’s en prijzen uit het blok "Huidig Aanbod" hieronder (en de ficha-URL’s). Verzin geen auto’s of bedragen die daar niet staan.
 
 COMMERCIEEL DOEL:
 - Herken de intentie en vraag alleen het nodige (beschikbaarheid, prijs, financiering, inruil, locatie).
@@ -287,6 +410,12 @@ Huidig Aanbod:
 ${INVENTORY_TEXT}
 `;
 
-export const getSystemInstruction = (language: Language) => (
-  language === 'en' ? SYSTEM_INSTRUCTION_EN : language === 'nl' ? SYSTEM_INSTRUCTION_NL : SYSTEM_INSTRUCTION_ES
-);
+export const getSystemInstruction = (language: Language) => {
+  const base =
+    language === 'en'
+      ? SYSTEM_INSTRUCTION_EN
+      : language === 'nl'
+        ? SYSTEM_INSTRUCTION_NL
+        : SYSTEM_INSTRUCTION_ES;
+  return base + getClientKnowledgeBlock(language);
+};
