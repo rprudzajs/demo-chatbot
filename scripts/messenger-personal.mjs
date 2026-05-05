@@ -132,22 +132,14 @@ function passesAllowlist(threadId, displayName) {
 async function main() {
   if (!existsSync(USER_DATA_DIR)) mkdirSync(USER_DATA_DIR, { recursive: true });
 
-  let page = await launchAndLogin();
+  const { inboxPage, context } = await launchAndLogin();
   const repliedTo = loadReplied();
   if (DEBUG) console.log(`[dedup] loaded ${repliedTo.size} prior keys from ${REPLIED_PATH}`);
-
-  console.log(`\n[messenger-bot] Polling every ${POLL_MS / 1000}s (headless — no visible window).\n`);
+  console.log(`\n[messenger-bot] Polling every ${POLL_MS / 1000}s. Inbox tab stays pinned.\n`);
 
   while (true) {
     try {
-      if (page.isClosed()) {
-        console.warn('[messenger-bot] Page closed — recovering...');
-        const ctx = page.context();
-        page = await ctx.newPage();
-        await page.goto('https://www.messenger.com/', { waitUntil: 'domcontentloaded' }).catch(() => {});
-        await page.waitForTimeout(3000);
-      }
-      await checkAndReply(page, repliedTo);
+      await checkAndReply(inboxPage, context, repliedTo);
     } catch (e) {
       console.error('[poll error]', e.message);
     }
@@ -156,68 +148,54 @@ async function main() {
 }
 
 /**
- * Launch Chromium and ensure we're logged in.
- * - First tries headless with the saved persistent profile.
- * - If not logged in, relaunches headful for one-time login, auto-detects
- *   inbox, then closes the headful context and relaunches headless so the
- *   rest of the session runs invisible.
+ * Launch Chromium (always headful — headless breaks Messenger's JS rendering).
+ * If session is valid: returns immediately.
+ * If expired: waits for manual login with auto-detection, no ENTER needed.
+ * The inbox page is kept pinned — threads are opened in separate tabs.
  */
 async function launchAndLogin() {
   const ctxOptions = {
+    headless: false,
     viewport: { width: 1280, height: 800 },
     userAgent:
       'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     args: ['--no-sandbox', '--disable-blink-features=AutomationControlled'],
   };
 
-  // ── 1. Try headless first ────────────────────────────────────────────────
-  console.log('[messenger-bot] Trying saved session (headless)...');
-  let ctx = await chromium.launchPersistentContext(USER_DATA_DIR, { ...ctxOptions, headless: true });
-  let page = ctx.pages()[0] ?? (await ctx.newPage());
-  await page.goto('https://www.messenger.com/', { waitUntil: 'domcontentloaded' }).catch(() => {});
-  await page.waitForTimeout(3000);
+  const context = await chromium.launchPersistentContext(USER_DATA_DIR, ctxOptions);
+  let inboxPage = context.pages()[0] ?? (await context.newPage());
 
-  if (await isLoggedIn(page)) {
-    console.log('✅ Session restored — running headless.');
-    return page;
+  console.log('[messenger-bot] Navigating to Messenger inbox...');
+  await inboxPage.goto('https://www.messenger.com/', { waitUntil: 'domcontentloaded' }).catch(() => {});
+  await inboxPage.waitForTimeout(3000);
+
+  if (await isLoggedIn(inboxPage)) {
+    console.log('✅ Already logged in (persistent profile).');
+    return { inboxPage, context };
   }
 
-  // ── 2. Session gone — relaunch headful for one-time login ───────────────
-  await ctx.close();
+  // Session expired — wait for manual login, auto-detect inbox
   console.log(
-    '\n🔑  Session expired — opening a Chrome window for re-login.' +
-    '\n    Log into messenger.com and the bot will continue automatically.\n',
+    '\n🔑  Login required — log into messenger.com in the Chrome window.' +
+    '\n    The bot will continue automatically once your inbox is visible.\n',
   );
-
-  ctx = await chromium.launchPersistentContext(USER_DATA_DIR, { ...ctxOptions, headless: false });
-  page = ctx.pages()[0] ?? (await ctx.newPage());
-  await page.goto('https://www.messenger.com/', { waitUntil: 'domcontentloaded' }).catch(() => {});
-  await page.waitForTimeout(2000);
 
   let waited = 0;
   while (waited < 10 * 60 * 1000) {
-    await page.waitForTimeout(3000);
+    await inboxPage.waitForTimeout(3000);
     waited += 3000;
-    const pages = ctx.pages().filter((p) => !p.isClosed());
-    page = pages.find((p) => p.url().includes('messenger.com')) ?? pages[pages.length - 1] ?? page;
-    if (await isLoggedIn(page).catch(() => false)) break;
+    const pages = context.pages().filter((p) => !p.isClosed());
+    inboxPage = pages.find((p) => p.url().includes('messenger.com')) ?? pages[pages.length - 1] ?? inboxPage;
+    if (await isLoggedIn(inboxPage).catch(() => false)) break;
+    if (DEBUG) console.log(`[login] waiting... ${Math.round(waited / 1000)}s`);
   }
 
-  if (!(await isLoggedIn(page).catch(() => false))) {
+  if (!(await isLoggedIn(inboxPage).catch(() => false))) {
     console.error('❌ Login timeout. Re-run the bot.');
-    await ctx.close(); process.exit(1);
+    await context.close(); process.exit(1);
   }
-
-  console.log('✅ Logged in. Switching to headless...');
-  await ctx.close(); // saves the profile to disk
-
-  // ── 3. Relaunch headless using the freshly saved session ─────────────────
-  ctx = await chromium.launchPersistentContext(USER_DATA_DIR, { ...ctxOptions, headless: true });
-  page = ctx.pages()[0] ?? (await ctx.newPage());
-  await page.goto('https://www.messenger.com/', { waitUntil: 'domcontentloaded' }).catch(() => {});
-  await page.waitForTimeout(2000);
-  console.log('✅ Running headless — no visible window.');
-  return page;
+  console.log('✅ Logged in. Bot running — inbox tab stays open in the background.');
+  return { inboxPage, context };
 }
 
 /**
@@ -271,8 +249,8 @@ async function isLoggedIn(page) {
 const _threadPreviewSeen = new Map(); // threadId → last previewText
 
 // ── Polling: find unread threads, open each, decide if we should reply ───────
-async function checkAndReply(page, repliedTo) {
-  // Navigate to inbox only when not already on it (avoids constant full reloads)
+async function checkAndReply(page, context, repliedTo) {
+  // Ensure inbox page is still on messenger.com (recover if navigated away)
   const curUrl = page.url();
   const onInbox = /messenger\.com\/(t\/|inbox\/?)?($|\?)/.test(curUrl);
   if (!onInbox) {
@@ -351,101 +329,80 @@ async function checkAndReply(page, repliedTo) {
 
   for (const cand of queue) {
     const { threadId, href, displayName, previewText } = cand;
-
-    // Mark preview as seen so we don't revisit same content next poll
     _threadPreviewSeen.set(threadId, previewText);
 
     if (!passesAllowlist(threadId, displayName)) {
-      if (DEBUG)
-        console.log(`[allowlist] skip threadId=${threadId} name="${displayName ?? ''}" not in ${JSON.stringify(ALLOWLIST)}`);
+      if (DEBUG) console.log(`[allowlist] skip ${threadId} "${displayName ?? ''}"`);
       continue;
     }
 
+    // Open thread in a NEW TAB — inbox page stays untouched, no visible refresh
     const fullUrl = href.startsWith('http') ? href : `https://www.messenger.com${href}`;
-    await page.goto(fullUrl, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
-    await page.waitForTimeout(2200);
+    const threadPage = await context.newPage();
+    try {
+      await threadPage.goto(fullUrl, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
+      await threadPage.waitForTimeout(2200);
 
-    const { last, history: pageHistory } = await getThreadMessages(page);
-    if (!last || !last.text || last.text.length < 2) {
-      if (DEBUG) console.log(`[skip] threadId=${threadId} no incoming text found`);
-      continue;
-    }
-    if (!last.isIncoming) {
-      if (DEBUG) console.log(`[skip] threadId=${threadId} last message is OUTGOING — nothing to reply to`);
-      continue;
-    }
-
-    const msgKey = `${threadId}::${last.text.slice(0, 120)}`;
-    if (repliedTo.has(msgKey)) {
-      if (DEBUG) console.log(`[skip] threadId=${threadId} already replied (key seen)`);
-      continue;
-    }
-
-    // Seed the in-memory session with the visible page history so the AI has
-    // context even after a bot restart (avoids re-greeting, remembers prior cars).
-    seedSessionFromHistory(threadId, pageHistory);
-
-    console.log(`\n[NEW MSG] Thread: ${threadId}${displayName ? ` (${displayName})` : ''}`);
-    console.log(`  User: "${last.text.slice(0, 200)}"`);
-
-    if (!GEMINI_API_KEY) {
-      console.warn('  ⚠️  No GEMINI_API_KEY — sending fallback reply.');
-      const ok = DRY_RUN ? true : await sendReply(page, MESSENGER_FALLBACK_REPLY);
-      if (ok) {
-        repliedTo.add(msgKey);
-        saveReplied(repliedTo);
+      const { last, history: pageHistory } = await getThreadMessages(threadPage);
+      if (!last || !last.text || last.text.length < 2) {
+        if (DEBUG) console.log(`[skip] ${threadId} no incoming text`);
+        continue;
       }
-      continue;
+      if (!last.isIncoming) {
+        if (DEBUG) console.log(`[skip] ${threadId} last msg is outgoing`);
+        continue;
+      }
+
+      const msgKey = `${threadId}::${last.text.slice(0, 120)}`;
+      if (repliedTo.has(msgKey)) {
+        if (DEBUG) console.log(`[skip] ${threadId} already replied`);
+        continue;
+      }
+
+      seedSessionFromHistory(threadId, pageHistory);
+
+      console.log(`\n[NEW MSG] Thread: ${threadId}${displayName ? ` (${displayName})` : ''}`);
+      console.log(`  User: "${last.text.slice(0, 200)}"`);
+
+      if (!GEMINI_API_KEY) {
+        const ok = DRY_RUN ? true : await sendReply(threadPage, MESSENGER_FALLBACK_REPLY);
+        if (ok) { repliedTo.add(msgKey); saveReplied(repliedTo); }
+        continue;
+      }
+
+      const { reply: aiReply, merged, fragments } = await enqueueAndGenerateReply(threadId, last.text);
+      if (!aiReply && fragments === 0) {
+        repliedTo.add(msgKey); saveReplied(repliedTo);
+        continue;
+      }
+      const reply = aiReply ?? MESSENGER_FALLBACK_REPLY;
+      if (fragments > 1) console.log(`  (merged ${fragments} fragments)`);
+      console.log(`  Bot: "${reply.slice(0, 160)}"`);
+
+      if (DRY_RUN) {
+        console.log('  🟡 DRY_RUN — not sending.');
+        repliedTo.add(msgKey); saveReplied(repliedTo);
+        continue;
+      }
+
+      const delay = humanDelayMs(reply);
+      console.log(`  (thinking ${(delay / 1000).toFixed(1)}s...)`);
+      await new Promise((r) => setTimeout(r, delay));
+
+      const sent = await sendReply(threadPage, reply);
+      if (sent) {
+        repliedTo.add(msgKey); saveReplied(repliedTo);
+        console.log('  ✅ Sent');
+        captureAndSyncLead(threadId, merged || last.text, reply, 'messenger_personal', {
+          displayName: displayName?.trim() || null,
+        }).catch((e) => console.error('[lead]', e.message));
+      } else {
+        console.warn('  ⚠️ send failed — will retry next poll');
+      }
+    } finally {
+      // Always close the tab so the inbox stays clean
+      await threadPage.close().catch(() => {});
     }
-
-    // Shared brain w/ debouncer: if more fragments arrive in the same poll
-    // window the older calls resolve to { reply: null } and we skip them.
-    const { reply: aiReply, merged, fragments } = await enqueueAndGenerateReply(threadId, last.text);
-    if (!aiReply && fragments === 0) {
-      if (DEBUG) console.log('  …superseded by newer fragment, skipping');
-      repliedTo.add(msgKey);
-      saveReplied(repliedTo);
-      continue;
-    }
-    const reply = aiReply ?? MESSENGER_FALLBACK_REPLY;
-    if (fragments > 1) console.log(`  (merged ${fragments} fragments)`);
-    console.log(`  Bot:  "${reply.slice(0, 160)}"`);
-
-    if (DRY_RUN) {
-      console.log('  🟡 DRY_RUN — not sending.');
-      repliedTo.add(msgKey);
-      saveReplied(repliedTo);
-      continue;
-    }
-
-    // Humanize: wait a realistic amount of time before typing
-    const delay = humanDelayMs(reply);
-    console.log(`  (thinking ${(delay / 1000).toFixed(1)}s before replying...)`);
-    await new Promise((r) => setTimeout(r, delay));
-
-    const sent = await sendReply(page, reply);
-    if (sent) {
-      repliedTo.add(msgKey);
-      saveReplied(repliedTo);
-      console.log('  ✅ Sent');
-
-      // Fire-and-forget lead capture (Sheet + FullMotor CRM). Use the merged
-      // text so the CRM sees the full multi-fragment context.
-      captureAndSyncLead(threadId, merged || last.text, reply, 'messenger_personal', {
-        displayName: displayName?.trim() || null,
-      }).catch((e) => console.error('[lead] capture error:', e.message));
-    } else {
-      console.warn('  ⚠️  send failed; will retry on next poll');
-    }
-
-    // Small pause between threads
-    await page.waitForTimeout(1200);
-  }
-
-  // Return to inbox so the sidebar is visible on the next poll tick
-  if (queue.length > 0 && !page.isClosed()) {
-    await page.goto('https://www.messenger.com/', { waitUntil: 'domcontentloaded', timeout: 12000 }).catch(() => {});
-    await page.waitForTimeout(1000);
   }
 }
 
