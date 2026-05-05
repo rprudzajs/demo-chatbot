@@ -64,7 +64,7 @@ const {
 // ── Config ───────────────────────────────────────────────────────────────────
 const USER_DATA_DIR = resolve(__dirname, '..', '.messenger-userdata');
 const REPLIED_PATH = resolve(__dirname, '..', '.messenger-replied.json');
-const POLL_MS = Number(process.env.MESSENGER_POLL_MS ?? 8000);
+const POLL_MS = Number(process.env.MESSENGER_POLL_MS ?? 20000);
 const HEADLESS = String(process.env.MESSENGER_HEADLESS ?? 'false') === 'true';
 const DEBUG = String(process.env.MESSENGER_DEBUG ?? 'false') === 'true';
 const DRY_RUN = String(process.env.MESSENGER_DRY_RUN ?? 'false') === 'true';
@@ -276,17 +276,20 @@ async function isLoggedIn(page) {
   }
 }
 
+// ── Per-thread preview cache so we skip threads whose content hasn't changed ──
+const _threadPreviewSeen = new Map(); // threadId → last previewText
+
 // ── Polling: find unread threads, open each, decide if we should reply ───────
 async function checkAndReply(page, repliedTo) {
-  // Make sure we're on the inbox shell so the sidebar is mounted
-  if (!/messenger\.com\/?(t\/|inbox|$)/.test(page.url())) {
+  // Navigate to inbox only when not already on it (avoids constant full reloads)
+  const curUrl = page.url();
+  const onInbox = /messenger\.com\/(t\/|inbox\/?)?($|\?)/.test(curUrl);
+  if (!onInbox) {
     await page.goto('https://www.messenger.com/', { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
     await page.waitForTimeout(1500);
   }
 
-  // Grab a snapshot of sidebar threads with their unread state + display name.
-  // We do everything in one page.evaluate so we don't hold stale handles while
-  // navigating between threads.
+  // Grab sidebar threads. We do everything in one evaluate to avoid stale handles.
   const candidates = await page
     .evaluate(() => {
       const links = Array.from(document.querySelectorAll('a[href*="/t/"]'));
@@ -301,28 +304,36 @@ async function checkAndReply(page, repliedTo) {
         seen.add(threadId);
 
         const aria = (a.getAttribute('aria-label') ?? '').trim();
-        // Heuristics for unread:
-        //  1. aria-label contains "no leído" / "unread" / "sin leer"
-        //  2. presence of a sibling badge element with role="img" + aria-label containing "no leído"
-        //  3. bold text styling on the thread title (font-weight >= 600)
         const ariaLow = aria.toLowerCase();
+
+        // Collect all visible text spans to find name + preview separately
+        const spans = Array.from(a.querySelectorAll('span[dir="auto"]'));
+        const displayName = (spans[0]?.textContent ?? '').trim() || null;
+        // Preview is the second span (the last-message snippet)
+        const previewText = (spans[1]?.textContent ?? spans[0]?.textContent ?? '').trim();
+
+        // Skip thread if the last message in the preview was sent by us ("You:" / "Tú:")
+        const previewLow = previewText.toLowerCase();
+        const lastMsgIsOutgoing =
+          previewLow.startsWith('you:') ||
+          previewLow.startsWith('tú:') ||
+          previewLow.startsWith('tu:');
+        if (lastMsgIsOutgoing) continue;
+
+        // Unread heuristics:
+        //  1. aria-label contains "unread" / "no leído" / "sin leer"
+        //  2. bold font-weight on the preview span
         let unread =
           ariaLow.includes('unread') ||
           ariaLow.includes('no leído') ||
           ariaLow.includes('no leido') ||
           ariaLow.includes('sin leer');
-        if (!unread) {
-          const titleSpan = a.querySelector('span[dir="auto"]');
-          if (titleSpan) {
-            const fw = parseInt(getComputedStyle(titleSpan).fontWeight || '400', 10);
-            if (fw >= 600) unread = true;
-          }
+        if (!unread && spans[1]) {
+          const fw = parseInt(getComputedStyle(spans[1]).fontWeight || '400', 10);
+          if (fw >= 600) unread = true;
         }
 
-        const nameEl = a.querySelector('span[dir="auto"]');
-        const displayName = (nameEl?.textContent ?? '').trim() || null;
-
-        out.push({ threadId, href, displayName, unread, aria });
+        out.push({ threadId, href, displayName, previewText, unread, aria });
       }
       return out;
     })
@@ -337,12 +348,21 @@ async function checkAndReply(page, repliedTo) {
     );
   }
 
-  // Only act on unread threads. If no unread, do nothing this tick.
-  const queue = candidates.filter((c) => c.unread).slice(0, 5);
+  // Only act on threads that are: unread AND have a new preview since last check
+  const queue = candidates
+    .filter((c) => {
+      if (!c.unread) return false;
+      const prev = _threadPreviewSeen.get(c.threadId);
+      return prev !== c.previewText; // new content
+    })
+    .slice(0, 5);
   if (!queue.length) return;
 
   for (const cand of queue) {
-    const { threadId, href, displayName } = cand;
+    const { threadId, href, displayName, previewText } = cand;
+
+    // Mark preview as seen so we don't revisit same content next poll
+    _threadPreviewSeen.set(threadId, previewText);
 
     if (!passesAllowlist(threadId, displayName)) {
       if (DEBUG)
@@ -423,51 +443,70 @@ async function checkAndReply(page, repliedTo) {
       console.warn('  ⚠️  send failed; will retry on next poll');
     }
 
-    // Be nice to Messenger — small pause between threads
-    await page.waitForTimeout(1500);
+    // Small pause between threads
+    await page.waitForTimeout(1200);
+  }
+
+  // Return to inbox so the sidebar is visible on the next poll tick
+  if (queue.length > 0 && !page.isClosed()) {
+    await page.goto('https://www.messenger.com/', { waitUntil: 'domcontentloaded', timeout: 12000 }).catch(() => {});
+    await page.waitForTimeout(1000);
   }
 }
 
 /**
- * Detect the last message in the open thread AND whether it's incoming.
+ * Read the last INCOMING message from the currently open thread.
  *
- * Strategy: look at all message bubbles via [role="row"] grids, take the last
- * one with non-empty text, then decide direction by horizontal alignment of
- * the bubble within the conversation column. Outgoing messages are right-
- * aligned, incoming messages are left-aligned. This is resilient to FB's
- * frequent class-name churn.
+ * Strategy:
+ *  1. Collect all [role="row"] bubbles that contain a div[dir="auto"] with text.
+ *  2. Determine direction by x-position (incoming = left-aligned).
+ *  3. Skip: timestamp rows, date separators, outgoing rows, and rows whose
+ *     text looks like a relative timestamp ("29w", "1h", "Ayer", etc.).
+ *  4. Return the last incoming message, or null if none found.
  */
 async function getLastIncomingMessage(page) {
   const result = await page
     .evaluate(() => {
+      const convo = document.querySelector('div[role="main"]');
+      const convoRect = convo?.getBoundingClientRect();
+      const convoCenter = convoRect
+        ? convoRect.left + convoRect.width / 2
+        : window.innerWidth / 2;
+
       const rows = Array.from(document.querySelectorAll('div[role="row"]'));
       if (!rows.length) return null;
 
-      // Find the conversation column width (use the chat container)
-      let convoWidth = window.innerWidth;
-      const convo = document.querySelector('div[role="main"]');
-      if (convo) convoWidth = convo.getBoundingClientRect().width;
+      // Timestamp / separator patterns to skip
+      const tsRe = /^(\d{1,2}:\d{2}(\s?[ap]\.?\s?m\.?)?|hoy|today|ayer|yesterday|\d+[wdhms] ago|\d+[wdhms]|lunes|martes|miércoles|jueves|viernes|sábado|domingo|monday|tuesday|wednesday|thursday|friday|saturday|sunday)$/i;
 
       for (let i = rows.length - 1; i >= 0; i--) {
         const row = rows[i];
-        const text = (row.textContent ?? '').trim();
-        if (!text || text.length < 2) continue;
-        // Skip rows that look like timestamp markers
-        if (/^\d{1,2}:\d{2}(\s?[ap]\.?\s?m\.?)?$/i.test(text)) continue;
-        if (/^(Hoy|Today|Ayer|Yesterday)/i.test(text) && text.length < 40) continue;
 
-        // Find the message bubble inside the row — pick the widest non-image
-        // descendant whose text matches.
-        let bubble = row.querySelector('div[dir="auto"]') ?? row;
+        // Grab ONLY the direct message text — div[dir="auto"] inside the bubble.
+        // Using the innermost span avoids picking up the sender name label.
+        const bubbleDivs = Array.from(row.querySelectorAll('div[dir="auto"]'));
+        if (!bubbleDivs.length) continue;
+
+        // Take the div with the most text (the actual message body)
+        const bubble = bubbleDivs.reduce((a, b) =>
+          (b.textContent?.length ?? 0) > (a.textContent?.length ?? 0) ? b : a
+        );
+        const text = (bubble.textContent ?? '').trim();
+
+        if (!text || text.length < 2) continue;
+        if (tsRe.test(text)) continue;
+        // Skip relative timestamps embedded anywhere (e.g. "· 29w")
+        if (/·\s*\d+[wdhms]\b/.test(text)) continue;
+
+        // Direction: left-of-center = incoming, right-of-center = outgoing
         const rect = bubble.getBoundingClientRect();
         if (rect.width === 0) continue;
-
         const center = rect.left + rect.width / 2;
-        const convoRect = convo?.getBoundingClientRect();
-        const convoCenter = convoRect ? convoRect.left + convoRect.width / 2 : convoWidth / 2;
-        const isOutgoing = center > convoCenter + 20; // right-of-center → ours
+        const isOutgoing = center > convoCenter + 20;
 
-        return { text, isIncoming: !isOutgoing };
+        if (isOutgoing) continue; // skip our own messages
+
+        return { text, isIncoming: true };
       }
       return null;
     })
