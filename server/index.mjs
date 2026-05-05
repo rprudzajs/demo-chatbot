@@ -24,11 +24,18 @@ import express from 'express';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { createRequire } from 'module';
-import { GoogleGenAI } from '@google/genai';
-import { crmCreateLead, crmUpdateLead, crmOrigen, CRM_VENDEDOR } from './fullmotor-crm.mjs';
-
-const _require = createRequire(import.meta.url);
+import {
+  getSession,
+  detectCarsFromText,
+  detectInterestFromText,
+  extractContactFromText,
+  fetchMessengerProfile,
+  submitMessengerLead,
+  captureAndSyncLead,
+  generateReply,
+  enqueueAndGenerateReply,
+  _aldStock,
+} from './assistant-brain.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(__dirname, '..');
@@ -71,395 +78,6 @@ function normalizeMessengerPsid(raw) {
   return s;
 }
 
-// ── Full car-brain system prompt (same brain as the demo website) ──
-const _aldStock = (() => {
-  try {
-    return _require('../data/ald-stock-base.json');
-  } catch {
-    return [];
-  }
-})();
-
-const _inventoryText = (() => {
-  if (!_aldStock.length) return '(inventario no disponible)';
-  const lines = _aldStock.map((car) => {
-    const numericId = String(car.id).replace(/^ald-/, '');
-    const price = car.currency === 'CLP'
-      ? new Intl.NumberFormat('es-CL', { style: 'currency', currency: 'CLP', maximumFractionDigits: 0 }).format(car.price)
-      : `$${Number(car.price).toLocaleString('en-US')}`;
-    const notes = [car.listHeadline, car.listSubtitle].filter(Boolean).join(' · ');
-    const fichaUrl = `https://www.ald.cl/ficha/${numericId}/`;
-    const noteLine = notes ? `\n  Notas: ${notes}` : '';
-    return `- ${car.year} ${car.make} ${car.model} (id ${numericId}): ${price}\n  KM: ${Number(car.mileage).toLocaleString('es-CL')} km · ${car.transmission} · ${car.fuelType}\n  Ficha: ${fichaUrl}${noteLine}`;
-  });
-  return lines.join('\n') + `\n\nResumen: ${_aldStock.length} unidades en inventario. Solo usa precios y datos de esta lista; si falta algo, ofrece confirmación con un ejecutivo.`;
-})();
-
-const _clientKnowledge = `
-Marca comercial: ALD Autos. Sitio: https://www.ald.cl — sección stock: /stock.
-UBICACIÓN: Comandante Malbec 13495, Lo Barnechea, Chile.
-TELÉFONOS: (+56 9) 7459-6700 · (+56 9) 7285-3439 · (+56 9) 6618-1755 · Consignación: (+56 9) 9294-3779
-HORARIO: Lunes a viernes 09:00–19:00 · Sábado 10:00–14:00
-MONEDA: precios en pesos chilenos (CLP).
-Si el usuario pide un dato no listado, no inventes — ofrece derivar a un ejecutivo por WhatsApp o llamada.
-`.trim();
-
-const MESSENGER_GEMINI_SYSTEM = `
-Eres el asesor de ventas de ALD Autos — seminuevos premium en Santiago. Eres experto, proactivo y humano. Tu meta: convertir cada conversación en una visita o contacto real.
-
-═══════════════════════════════════════
-REGLAS ABSOLUTAS (nunca las rompas)
-═══════════════════════════════════════
-1. IDIOMA: Siempre español chileno. Tutéalo al cliente.
-2. SOLO OFRECE LO QUE EXISTE en el inventario. Jamás inventes un auto, precio o característica.
-3. FILTRA POR CATEGORÍA PRIMERO: Si el cliente pide un tipo de vehículo (camioneta, SUV, sedán, etc.), solo muestra autos de esa categoría. No mezcles tipos aunque sean de la marca solicitada.
-4. FORMATO: Texto plano. Sin asteriscos, sin corchetes, sin markdown. URLs limpias: https://www.ald.cl/ficha/250702/ — nunca [link](url).
-5. Respuestas cortas: máx 3 párrafos, 2 frases cada uno. Separa párrafos con línea en blanco.
-6. Emojis: máx 1-2 por respuesta, solo para calidez.
-7. LISTAS DE AUTOS: Cuando muestres 2 o más autos, SIEMPRE usa este formato exacto (un auto por línea, guión al inicio, sin texto extra antes de la lista):
-- Nissan Navara XE 2022 · Diesel · AT · $21.990.000 → https://www.ald.cl/ficha/250226/
-- Mazda BT-50 SDX 2019 · Diesel · MT · $10.490.000 → https://www.ald.cl/ficha/224791/
-NUNCA escribas un auto como párrafo cuando hay más de uno. Siempre lista, siempre con guión.
-8. MEMORIA Y CONTINUIDAD: El historial completo de la conversación está arriba. Úsalo siempre.
-   - Si ya saludaste → NUNCA vuelvas a decir "¡Hola!" o "Hola [nombre]" ni nada parecido. Continúa directo al tema.
-   - Si el cliente ya mencionó su presupuesto, categoría o marca → no vuelvas a preguntar lo mismo.
-   - Si el cliente dice "ese", "ese que me mostraste", "el primero", "el Nissan", "me gusta la Mazda" → busca en el historial qué auto mencionaste y responde sobre ESE auto.
-
-═══════════════════════════════════════
-CATEGORÍAS DEL INVENTARIO (úsalas para filtrar)
-═══════════════════════════════════════
-En Chile "camioneta" y "pickup" son lo mismo. Cuando el cliente diga cualquiera de estas palabras, SOLO muestra vehículos de la categoría PICKUP:
-
-PICKUPS / CAMIONETAS (solo estos modelos):
-- Mazda BT-50 SDX 2019 — $10.490.000
-- Mitsubishi L200 CRT 4X4 MT 2019 — $11.990.000
-- Toyota Hilux 2.4 MT 4X4 1996 — $12.990.000
-- Ford F-150 XLT 3.3 AT 2016 — $16.990.000
-- Nissan Navara XE 2.3 AT 4WD 2022 — $21.990.000
-- Chevrolet Silverado LT Trail Boss 5.3 2023 — $38.990.000
-- Chevrolet Silverado LTZ 5.3 2020 — $31.990.000
-
-SUVs / 4WD: Modelos tipo Jeep, Range Rover, Mitsubishi Outlander, Kia Sorento, Nissan Murano, Mazda CX-5, etc.
-SEDANES: Modelos tipo Audi A6, Mercedes A200, Volkswagen Gol, etc.
-COUPES / DEPORTIVOS: Porsche, Mercedes SL, Volkswagen Scirocco, Nissan 300ZX, etc.
-STATION WAGON: Subaru Outback, Volvo V40/V60, etc.
-
-REGLA CLAVE: Si el cliente dice "camioneta Nissan" → solo muestra la Nissan Navara. No muestres el Murano, no muestres el 300ZX. Solo la Navara porque es la única camioneta Nissan en stock.
-
-═══════════════════════════════════════
-COMPORTAMIENTO PROACTIVO
-═══════════════════════════════════════
-PRIMER MENSAJE (saludo o "hola"):
-No preguntes qué buscan — ya lo harás después. Primero preséntate brevemente y muestra 2-3 autos destacados del inventario (mezcla de categorías y rangos de precio). Luego pregunta qué tipo de auto les interesa.
-
-Ejemplo de apertura correcta:
-"¡Hola! Soy el asesor de ALD Autos 👋 Tenemos 95 autos seminuevos en Lo Barnechea.
-
-Algunos destacados de hoy: Nissan Navara 2022 pickup 4WD ($21.990.000), Jeep Wrangler Rubicon 2021 ($39.990.000), Mercedes-Benz A200 2020 ($22.990.000).
-
-¿Qué tipo de vehículo estás buscando? ¿Tienes algún presupuesto en mente?"
-
-CUANDO EL CLIENTE DA UNA CATEGORÍA:
-Muestra 2-3 opciones concretas de esa categoría con precio y año. No hagas más preguntas antes de mostrar opciones — primero ofrece, luego afina.
-
-CUANDO EL CLIENTE DA CATEGORÍA + MARCA:
-Filtra al cruce exacto. Si hay 1 solo resultado, muéstralo con detalle completo (ficha, precio, km, transmisión). Si no hay ninguno, dilo honestamente y ofrece alternativas similares.
-
-CUANDO EL CLIENTE MENCIONA UN AUTO QUE YA OFRECISTE:
-Si el cliente dice "me gusta la Mazda", "me interesa ese", "cuéntame más del Nissan", etc. refiriéndose a un auto que TÚ ya mencionaste en la conversación — NO preguntes qué tipo busca. Ya sabes exactamente a cuál se refiere. Muéstrale la ficha completa de ESE auto: precio, km, transmisión, combustible, y link. Luego ofrece agendar una visita.
-
-CUANDO EL CLIENTE DA SOLO UNA MARCA (sin haber visto opciones antes y sin categoría establecida):
-NUNCA listes todos los autos de esa marca — son tipos muy distintos y eso confunde.
-Primero pregunta: "¿Qué tipo de vehículo buscas — camioneta, SUV, sedán?"
-Si ya se estableció una categoría antes en la conversación, úsala directamente para filtrar.
-
-CUANDO EL CLIENTE TIENE PRESUPUESTO:
-Muestra los 2-3 mejores autos dentro de ese rango. Si el presupuesto es bajo para lo que pide, sugiere la opción más cercana que sí existe.
-
-═══════════════════════════════════════
-GUÍA DE CONVERSACIÓN
-═══════════════════════════════════════
-- Precio: confirma el precio publicado, menciona que tiene financiamiento disponible.
-- Financiamiento: pide pie y plazo, ofrece simular cuota.
-- Permuta: pregunta qué auto tiene para tasar.
-- Visita/prueba: pide nombre + WhatsApp + día preferido.
-- Cierre: cuando haya interés claro, pide los datos directamente: "¿Me pasas tu nombre y WhatsApp para que un ejecutivo te confirme todo?"
-
-═══════════════════════════════════════
-DATOS DEL NEGOCIO
-═══════════════════════════════════════
-${_clientKnowledge}
-
-═══════════════════════════════════════
-INVENTARIO COMPLETO
-═══════════════════════════════════════
-${_inventoryText}
-`.trim();
-
-/** Strip markdown formatting from Gemini replies (Messenger/WA are plain text) */
-function stripMarkdown(text) {
-  if (!text) return null;
-  return text
-    .replace(/\[([^\]]*)\]\(([^)]+)\)/g, '$2')   // [text](url) → url
-    .replace(/\*\*([^*]+)\*\*/g, '$1')            // **bold** → plain
-    .replace(/\*([^*]+)\*/g, '$1')                // *italic* → plain
-    .replace(/_{2}([^_]+)_{2}/g, '$1')            // __bold__ → plain
-    .replace(/_([^_]+)_/g, '$1')                  // _italic_ → plain
-    .replace(/`([^`]+)`/g, '$1')                  // `code` → plain
-    .replace(/#{1,6}\s+/g, '')                    // ## headers → plain
-    .trim();
-}
-
-// ── Session store (in-memory, resets on redeploy) ────────────────────────────
-const _sessions = new Map();
-const SESSION_TTL_MS = 24 * 60 * 60 * 1000; // 24h — after this, same person = new lead row
-
-function getSession(psid) {
-  const existing = _sessions.get(psid);
-  const now = Date.now();
-  // Expire session after 24h → next message treated as fresh contact
-  if (existing && (now - existing.seenAtMs) > SESSION_TTL_MS) {
-    _sessions.delete(psid);
-  }
-  if (!_sessions.has(psid)) {
-    _sessions.set(psid, {
-      seenAt: new Date().toISOString(),
-      seenAtMs: now,
-      profile: null,
-      marketplaceCar: null,
-      contactInfo: null,
-      carsDetected: [],        // accumulates ALL cars mentioned across conversation
-      interestCategories: [],
-      leadSent: false,
-      crmLeadId: null,         // FullMotor CRM lead ID once created
-      history: [],             // [{role:'user'|'model', parts:[{text}]}] — Gemini multi-turn
-    });
-  }
-  return _sessions.get(psid);
-}
-
-// ── Lead helpers ──────────────────────────────────────────────────────────────
-
-/** Fetch FB user name from Graph API using PSID + Page token */
-async function fetchMessengerProfile(psid) {
-  try {
-    const url = `https://graph.facebook.com/${GRAPH_VERSION}/${psid}?fields=name,first_name,last_name&access_token=${PAGE_ACCESS_TOKEN}`;
-    const res = await fetch(url);
-    if (!res.ok) return null;
-    return await res.json();
-  } catch {
-    return null;
-  }
-}
-
-/** Detect which car(s) are mentioned in text against inventory */
-function detectCarsFromText(text) {
-  const lower = text.toLowerCase();
-  const matches = [];
-  const seen = new Set();
-
-  // Track which makes are mentioned alone (no model) to flag all cars of that brand
-  const mentionedMakes = new Set();
-
-  for (const car of _aldStock) {
-    const key = car.id;
-    if (seen.has(key)) continue;
-    const makeLower = car.make.toLowerCase();
-    const makeModel = `${car.make} ${car.model}`.toLowerCase();
-    const modelOnly = car.model.toLowerCase().split(' ')[0]; // e.g. "3008" from "3008 GT"
-    const id = String(car.id).replace(/^ald-/, '');
-
-    const exactMatch =
-      lower.includes(makeModel) ||
-      lower.includes(id) ||
-      (modelOnly.length >= 3 && lower.includes(modelOnly) && lower.includes(makeLower));
-
-    if (exactMatch) {
-      seen.add(key);
-      matches.push({ id: car.id, make: car.make, model: car.model, year: car.year, price: car.price });
-    } else if (lower.includes(makeLower) && makeLower.length >= 3) {
-      // Make-only mention (e.g. "ferrari", "BMW") — collect all cars of that brand
-      mentionedMakes.add(makeLower);
-    }
-  }
-
-  // Add all cars for make-only mentions that aren't already matched
-  for (const car of _aldStock) {
-    if (seen.has(car.id)) continue;
-    if (mentionedMakes.has(car.make.toLowerCase())) {
-      seen.add(car.id);
-      matches.push({ id: car.id, make: car.make, model: car.model, year: car.year, price: car.price, makeOnly: true });
-    }
-  }
-
-  return matches.length ? matches : null;
-}
-
-/** Detect broad interest category from user message */
-function detectInterestFromText(text) {
-  const lower = text.toLowerCase();
-  const categories = ['suv', 'sedan', 'sedán', 'pickup', 'camioneta', 'eléctrico', 'electrico', 'hatchback', 'coupe', 'coupé'];
-  return categories.filter(c => lower.includes(c));
-}
-
-/** Extract phone/email/name from a message */
-function extractContactFromText(text) {
-  const email = text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0] ?? null;
-  const phone =
-    text.match(/\+?56\s*9\s*\d{4}\s*-?\s*\d{4}/)?.[0] ??
-    text.match(/\b9\s*\d{4}\s*\d{4}\b/)?.[0] ??
-    text.match(/\b9\d{8}\b/)?.[0] ??
-    text.match(/\+\d{8,12}\b/)?.[0] ??
-    null;
-  // Simple name detection: "me llamo X" / "soy X" / "mi nombre es X"
-  const nameMatch = text.match(/(?:me llamo|soy|mi nombre es)\s+([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+(?:\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+)*)/i);
-  const name = nameMatch?.[1] ?? null;
-  return { email, phone, name, hasContact: Boolean(email || phone || name) };
-}
-
-/** Post lead row to Google Sheet webhook */
-async function submitMessengerLead(payload) {
-  if (!LEADS_WEBHOOK_URL) return;
-  try {
-    console.info('[lead] submitting to sheet', { event: payload.event, fbName: payload.fbName });
-    await fetch(LEADS_WEBHOOK_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify(payload),
-    });
-  } catch (e) {
-    console.error('[lead] webhook error', e);
-  }
-}
-
-/**
- * Shared lead capture + CRM sync — called fire-and-forget from every inbound message handler.
- *
- * @param {string} psid   Messenger PSID or WhatsApp phone number (unique conversation key)
- * @param {string} text   Inbound user message
- * @param {string|null} reply  Bot reply text (may be null if send failed)
- * @param {'messenger'|'whatsapp'|'web_chat'} source
- */
-async function captureAndSyncLead(psid, text, reply, source) {
-  const session = getSession(psid);
-
-  // Fetch Messenger profile once (not available for WhatsApp)
-  if (source === 'messenger' && !session.profile && PAGE_ACCESS_TOKEN) {
-    session.profile = await fetchMessengerProfile(psid);
-  }
-
-  // WhatsApp: phone is the psid itself — pre-seed contactInfo
-  if (source === 'whatsapp' && !session.contactInfo?.phone) {
-    session.contactInfo = session.contactInfo ?? {};
-    session.contactInfo.phone = psid;
-  }
-
-  // Only detect cars the USER mentioned — not what the bot offered.
-  // Running detection on the bot reply would add every proactively suggested car to the lead.
-  const carsDetected = detectCarsFromText(text);
-  const interestCategories = detectInterestFromText(text);
-  const contactFound = extractContactFromText(text);
-  const isFirstMessage = !session.leadSent;
-
-  // Detect genuinely new data before merging
-  const prevCarIds = new Set((session.carsDetected ?? []).map(c => c.id));
-  const newCarFound = (carsDetected ?? []).some(c => !prevCarIds.has(c.id));
-  const newCategory = interestCategories.some(c => !(session.interestCategories ?? []).includes(c));
-
-  // Merge contact signals
-  if (contactFound.hasContact) {
-    session.contactInfo = session.contactInfo ?? {};
-    if (contactFound.phone) session.contactInfo.phone = contactFound.phone;
-    if (contactFound.email) session.contactInfo.email = contactFound.email;
-    if (contactFound.name) session.contactInfo.name = contactFound.name;
-  }
-
-  // Accumulate detected cars
-  if (carsDetected) {
-    const existingIds = new Set((session.carsDetected ?? []).map(c => c.id));
-    for (const car of carsDetected) {
-      if (!existingIds.has(car.id)) {
-        session.carsDetected = [...(session.carsDetected ?? []), car];
-        existingIds.add(car.id);
-      }
-    }
-  }
-
-  // Accumulate interest categories
-  if (interestCategories.length) {
-    session.interestCategories = [
-      ...new Set([...(session.interestCategories ?? []), ...interestCategories]),
-    ];
-  }
-
-  const shouldLog = isFirstMessage || newCarFound || newCategory || contactFound.hasContact;
-  if (!shouldLog) return;
-
-  session.leadSent = true;
-
-  const event = isFirstMessage
-    ? 'first_contact'
-    : contactFound.hasContact
-    ? 'contact_shared'
-    : 'car_detected';
-
-  // ── Google Sheet webhook ──
-  await submitMessengerLead({
-    source,
-    upsertKey: psid,
-    event,
-    sentAt: new Date().toISOString(),
-    psid,
-    fbName: session.profile?.name ?? null,
-    fbFirstName: session.profile?.first_name ?? null,
-    fbLastName: session.profile?.last_name ?? null,
-    extractedName: session.contactInfo?.name ?? null,
-    phone: session.contactInfo?.phone ?? null,
-    email: session.contactInfo?.email ?? null,
-    marketplaceCar: session.marketplaceCar ?? null,
-    carsDetected: session.carsDetected ?? null,
-    interestCategories: session.interestCategories ?? null,
-    lastMessage: text,
-    lastBotReply: reply?.slice(0, 500) ?? null,
-  });
-
-  // ── FullMotor CRM sync ──
-  const nombre =
-    session.profile?.name ??
-    session.contactInfo?.name ??
-    'Prospecto Web';
-  const firstCar = session.carsDetected?.[0] ?? null;
-  const modeloStr = firstCar
-    ? `${firstCar.make} ${firstCar.model} ${firstCar.year}`
-    : '';
-  const origen = crmOrigen(source, !!session.marketplaceCar);
-
-  if (!session.crmLeadId) {
-    const leadId = await crmCreateLead({
-      nombre,
-      telefono: session.contactInfo?.phone ?? '',
-      email: session.contactInfo?.email ?? '',
-      marca: firstCar?.make ?? '',
-      modelo: modeloStr,
-      origen,
-      mensaje: `[${source.toUpperCase()}] ${text.slice(0, 500)}`,
-      link: `psid:${psid}`,
-    });
-    if (leadId) {
-      session.crmLeadId = leadId;
-    }
-  } else {
-    await crmUpdateLead(session.crmLeadId, {
-      nombre1: nombre,
-      telefono1: session.contactInfo?.phone ?? '',
-      email1: session.contactInfo?.email ?? '',
-      modelo: modeloStr,
-      estado: '2', // VOLVER A LLAMAR
-      vendedor: CRM_VENDEDOR,
-      mensaje: `[${source.toUpperCase()}] ${text.slice(0, 500)}`,
-    });
-  }
-}
 
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -570,30 +188,8 @@ app.post('/api/make-messenger', express.json({ limit: '256kb' }), async (req, re
   let reply = null;
   let replySource = 'none';
   if (GEMINI_API_KEY) {
-    try {
-      const session = getSession(psid);
-      const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
-      const contents = [
-        ...(session.history ?? []),
-        { role: 'user', parts: [{ text }] },
-      ];
-      const response = await ai.models.generateContent({
-        model: GEMINI_MODEL,
-        contents,
-        config: { systemInstruction: MESSENGER_GEMINI_SYSTEM, temperature: 0.7 },
-      });
-      reply = stripMarkdown(response.text?.trim() || null);
-      if (reply) {
-        replySource = 'gemini';
-        session.history = [
-          ...(session.history ?? []),
-          { role: 'user', parts: [{ text }] },
-          { role: 'model', parts: [{ text: reply }] },
-        ].slice(-20);
-      }
-    } catch (e) {
-      console.error('[make-messenger] gemini', e);
-    }
+    reply = await generateReply(psid, text);
+    if (reply) replySource = 'gemini';
   } else {
     console.warn(
       '[make-messenger] GEMINI_API_KEY unset on server — set it on Railway for AI replies (not VITE_ only)',
@@ -707,37 +303,20 @@ async function handleMessengerWebhook(body) {
 
       if (!text || !PAGE_ACCESS_TOKEN) continue;
 
-      // ── Full AI reply + lead capture (same logic as /api/make-messenger) ──
+      // ── Full AI reply + lead capture (debounced: merges fragments) ──
       let reply = null;
       let replySource = 'none';
+      let mergedText = text;
 
       if (GEMINI_API_KEY) {
-        try {
-          const session = getSession(psid);
-          const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
-          // Build multi-turn contents: history + current user message
-          const contents = [
-            ...(session.history ?? []),
-            { role: 'user', parts: [{ text }] },
-          ];
-          const response = await ai.models.generateContent({
-            model: GEMINI_MODEL,
-            contents,
-            config: { systemInstruction: MESSENGER_GEMINI_SYSTEM, temperature: 0.7 },
-          });
-          reply = stripMarkdown(response.text?.trim() || null);
-          if (reply) {
-            replySource = 'gemini';
-            // Append this turn to session history (keep last 20 turns max)
-            session.history = [
-              ...(session.history ?? []),
-              { role: 'user', parts: [{ text }] },
-              { role: 'model', parts: [{ text: reply }] },
-            ].slice(-20);
-          }
-        } catch (e) {
-          console.error('[webhook gemini]', e);
+        const r = await enqueueAndGenerateReply(psid, text);
+        if (!r.reply && r.fragments === 0) {
+          // Newer fragment from same psid took over — let it handle the send.
+          continue;
         }
+        reply = r.reply;
+        mergedText = r.merged || text;
+        if (reply) replySource = 'gemini';
       }
 
       if (!reply && MESSENGER_AUTO_REPLY) { reply = MESSENGER_AUTO_REPLY; replySource = 'auto'; }
@@ -747,8 +326,8 @@ async function handleMessengerWebhook(body) {
       await sendMessengerText(psid, reply);
       console.info('[webhook send]', { psid, replySource, preview: reply.slice(0, 80) });
 
-      // ── Lead capture + CRM sync — fire and forget ──
-      setImmediate(() => captureAndSyncLead(psid, text, reply, 'messenger').catch(e => console.error('[lead]', e)));
+      // ── Lead capture + CRM sync — fire and forget (use merged user text) ──
+      setImmediate(() => captureAndSyncLead(psid, mergedText, reply, 'messenger').catch(e => console.error('[lead]', e)));
     }
   }
 }
@@ -777,39 +356,25 @@ async function handleWhatsAppWebhook(body) {
 
         if (!WHATSAPP_PHONE_NUMBER_ID || !WHATSAPP_ACCESS_TOKEN) continue;
 
-        // ── Gemini AI reply (same brain as Messenger) ──
+        // ── Gemini AI reply (same brain as Messenger, debounced) ──
         let reply = null;
         let replySource = 'none';
+        let mergedText = text;
 
         if (GEMINI_API_KEY) {
-          try {
-            const waSession = getSession(from);
-            // Pre-seed phone from the WA number on first message
-            if (!waSession.contactInfo) {
-              waSession.contactInfo = { phone: from };
-            }
-            const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
-            const contents = [
-              ...(waSession.history ?? []),
-              { role: 'user', parts: [{ text }] },
-            ];
-            const response = await ai.models.generateContent({
-              model: GEMINI_MODEL,
-              contents,
-              config: { systemInstruction: MESSENGER_GEMINI_SYSTEM, temperature: 0.7 },
-            });
-            reply = stripMarkdown(response.text?.trim() || null);
-            if (reply) {
-              replySource = 'gemini';
-              waSession.history = [
-                ...(waSession.history ?? []),
-                { role: 'user', parts: [{ text }] },
-                { role: 'model', parts: [{ text: reply }] },
-              ].slice(-20);
-            }
-          } catch (e) {
-            console.error('[whatsapp gemini]', e);
+          // Pre-seed phone from the WA number on first message
+          const waSession = getSession(from);
+          if (!waSession.contactInfo) {
+            waSession.contactInfo = { phone: from };
           }
+          const r = await enqueueAndGenerateReply(from, text);
+          if (!r.reply && r.fragments === 0) {
+            // Newer fragment from same WA took over.
+            continue;
+          }
+          reply = r.reply;
+          mergedText = r.merged || text;
+          if (reply) replySource = 'gemini';
         }
 
         if (!reply && WHATSAPP_AUTO_REPLY) { reply = WHATSAPP_AUTO_REPLY; replySource = 'auto'; }
@@ -819,8 +384,8 @@ async function handleWhatsAppWebhook(body) {
         await sendWhatsAppText(from, reply);
         console.info('[whatsapp send]', { from, replySource, preview: reply.slice(0, 80) });
 
-        // ── Lead capture + CRM sync — fire and forget ──
-        setImmediate(() => captureAndSyncLead(from, text, reply, 'whatsapp').catch(e => console.error('[wa lead]', e)));
+        // ── Lead capture + CRM sync — fire and forget (use merged user text) ──
+        setImmediate(() => captureAndSyncLead(from, mergedText, reply, 'whatsapp').catch(e => console.error('[wa lead]', e)));
       }
     }
   }

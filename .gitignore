@@ -37,6 +37,14 @@ data/scraped/corpus.md
 *.pem
 *.key
 
+# Bot session data (whatsapp-web.js + puppeteer cache)
+.wwebjs_auth/
+.wwebjs_cache/
+
+# Messenger personal bot (Playwright persistent profile + dedup state)
+.messenger-userdata/
+.messenger-replied.json
+
 # Railway / Vercel local
 .vercel
 .railway

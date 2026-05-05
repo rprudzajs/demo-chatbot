@@ -14,13 +14,17 @@
     "scrape:ald:merge": "node scripts/merge-scraped-to-corpus.mjs",
     "scrape:ald:report": "node scripts/ald-inventory-report.mjs",
     "scrape:ald:stock": "node scripts/scraped-pages-to-ald-stock.mjs",
-    "mirror:inventory-images": "node scripts/mirror-inventory-images.mjs"
+    "mirror:inventory-images": "node scripts/mirror-inventory-images.mjs",
+    "bot:messenger": "node scripts/messenger-personal.mjs",
+    "bot:whatsapp": "node scripts/whatsapp-personal.mjs"
   },
   "dependencies": {
     "@google/genai": "^1.39.0",
     "express": "^5.1.0",
+    "qrcode-terminal": "^0.12.0",
     "react": "^19.2.4",
-    "react-dom": "^19.2.4"
+    "react-dom": "^19.2.4",
+    "whatsapp-web.js": "^1.34.6"
   },
   "devDependencies": {
     "@railway/cli": "^4.0.0",
