@@ -33,8 +33,6 @@ import { chromium } from 'playwright';
 import { fileURLToPath } from 'url';
 import { resolve, dirname } from 'path';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
-import readline from 'readline';
-
 // ── Load env BEFORE importing the brain (brain reads process.env on import) ──
 // Match Vite/Next convention: .env.local overrides .env. First non-empty wins.
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -55,6 +53,7 @@ for (const file of ['.env.local', '.env']) {
 const {
   enqueueAndGenerateReply,
   captureAndSyncLead,
+  getSession,
   MESSENGER_FALLBACK_REPLY,
   _aldStock,
   GEMINI_API_KEY,
@@ -133,91 +132,18 @@ function passesAllowlist(threadId, displayName) {
 async function main() {
   if (!existsSync(USER_DATA_DIR)) mkdirSync(USER_DATA_DIR, { recursive: true });
 
-  console.log(`[messenger-bot] Launching Chromium with persistent profile at ${USER_DATA_DIR}`);
-  const context = await chromium.launchPersistentContext(USER_DATA_DIR, {
-    headless: HEADLESS,
-    viewport: { width: 1280, height: 800 },
-    userAgent:
-      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    args: ['--no-sandbox', '--disable-blink-features=AutomationControlled'],
-  });
-
-  let page = context.pages()[0] ?? (await context.newPage());
-
-  console.log('[messenger-bot] Navigating to Messenger...');
-  await page.goto('https://www.messenger.com/', { waitUntil: 'domcontentloaded' }).catch(() => {});
-  await page.waitForTimeout(3000);
-
-  if (await isLoggedIn(page)) {
-    console.log('✅ Already logged in (persistent profile).');
-  } else {
-    if (HEADLESS) {
-      console.error(
-        '\n❌ Not logged in and running headless. Run once with MESSENGER_HEADLESS=false to log in manually (incl. 2FA), then restart in headless mode.\n',
-      );
-      await context.close();
-      process.exit(1);
-    }
-
-    console.log(
-      '\n══════════════════════════════════════════════════════════════════════' +
-        '\n🔑  LOGIN REQUIRED — drive the Chrome window yourself.' +
-        '\n══════════════════════════════════════════════════════════════════════' +
-        '\n  1. Enter email + password on messenger.com / facebook.com' +
-        '\n  2. Complete 2FA on facebook.com if prompted' +
-        '\n  3. If FB asks "Save your login info?", click Yes' +
-        '\n  4. Wait until you SEE your Messenger inbox (chats list visible)' +
-        '\n' +
-        '\n  ⚠️  This script will NOT touch the browser, navigate, or close anything.' +
-        '\n      Take all the time you need. No timeout.' +
-        '\n' +
-        '\n  👉  When your inbox is visible, come back HERE and press ENTER.' +
-        '\n      (Session will be saved to .messenger-userdata/ — one-time setup.)' +
-        '\n══════════════════════════════════════════════════════════════════════\n',
-    );
-
-    await waitForEnter('Press ENTER once you see your Messenger inbox: ');
-
-    // Re-grab the latest page in case Chromium opened a new tab during 2FA.
-    const pages = context.pages().filter((p) => !p.isClosed());
-    if (!pages.length) {
-      console.error('\n❌ All browser tabs were closed. Re-run the script and try again.\n');
-      await context.close();
-      process.exit(1);
-    }
-    // Prefer a tab that's actually on messenger.com
-    page = pages.find((p) => p.url().includes('messenger.com')) ?? pages[pages.length - 1];
-
-    if (DEBUG) console.log(`[login] confirming on page: ${page.url()}`);
-
-    if (!(await isLoggedIn(page).catch(() => false))) {
-      console.error(
-        '\n❌ Confirmed page is NOT a logged-in Messenger inbox.' +
-          `\n   Current URL: ${page.url()}` +
-          '\n   • Make sure the active tab is https://www.messenger.com/ with your chats visible.' +
-          '\n   • If you\'re still on facebook.com, navigate to https://www.messenger.com/ and re-run.\n',
-      );
-      await context.close();
-      process.exit(1);
-    }
-    console.log('✅ Logged in. Session saved to disk.');
-  }
-
-  console.log(
-    `\n[messenger-bot] Polling every ${POLL_MS / 1000}s. Press Ctrl+C to stop.${
-      HEADLESS ? '' : '\n[messenger-bot] Keep the Chrome window open.'
-    }\n`,
-  );
-
+  let page = await launchAndLogin();
   const repliedTo = loadReplied();
   if (DEBUG) console.log(`[dedup] loaded ${repliedTo.size} prior keys from ${REPLIED_PATH}`);
 
+  console.log(`\n[messenger-bot] Polling every ${POLL_MS / 1000}s (headless — no visible window).\n`);
+
   while (true) {
     try {
-      // If the page died (closed tab, crashed, navigated away), recover.
       if (page.isClosed()) {
-        console.warn('[messenger-bot] Page closed — opening a new one...');
-        page = await context.newPage();
+        console.warn('[messenger-bot] Page closed — recovering...');
+        const ctx = page.context();
+        page = await ctx.newPage();
         await page.goto('https://www.messenger.com/', { waitUntil: 'domcontentloaded' }).catch(() => {});
         await page.waitForTimeout(3000);
       }
@@ -227,6 +153,71 @@ async function main() {
     }
     await new Promise((r) => setTimeout(r, POLL_MS));
   }
+}
+
+/**
+ * Launch Chromium and ensure we're logged in.
+ * - First tries headless with the saved persistent profile.
+ * - If not logged in, relaunches headful for one-time login, auto-detects
+ *   inbox, then closes the headful context and relaunches headless so the
+ *   rest of the session runs invisible.
+ */
+async function launchAndLogin() {
+  const ctxOptions = {
+    viewport: { width: 1280, height: 800 },
+    userAgent:
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    args: ['--no-sandbox', '--disable-blink-features=AutomationControlled'],
+  };
+
+  // ── 1. Try headless first ────────────────────────────────────────────────
+  console.log('[messenger-bot] Trying saved session (headless)...');
+  let ctx = await chromium.launchPersistentContext(USER_DATA_DIR, { ...ctxOptions, headless: true });
+  let page = ctx.pages()[0] ?? (await ctx.newPage());
+  await page.goto('https://www.messenger.com/', { waitUntil: 'domcontentloaded' }).catch(() => {});
+  await page.waitForTimeout(3000);
+
+  if (await isLoggedIn(page)) {
+    console.log('✅ Session restored — running headless.');
+    return page;
+  }
+
+  // ── 2. Session gone — relaunch headful for one-time login ───────────────
+  await ctx.close();
+  console.log(
+    '\n🔑  Session expired — opening a Chrome window for re-login.' +
+    '\n    Log into messenger.com and the bot will continue automatically.\n',
+  );
+
+  ctx = await chromium.launchPersistentContext(USER_DATA_DIR, { ...ctxOptions, headless: false });
+  page = ctx.pages()[0] ?? (await ctx.newPage());
+  await page.goto('https://www.messenger.com/', { waitUntil: 'domcontentloaded' }).catch(() => {});
+  await page.waitForTimeout(2000);
+
+  let waited = 0;
+  while (waited < 10 * 60 * 1000) {
+    await page.waitForTimeout(3000);
+    waited += 3000;
+    const pages = ctx.pages().filter((p) => !p.isClosed());
+    page = pages.find((p) => p.url().includes('messenger.com')) ?? pages[pages.length - 1] ?? page;
+    if (await isLoggedIn(page).catch(() => false)) break;
+  }
+
+  if (!(await isLoggedIn(page).catch(() => false))) {
+    console.error('❌ Login timeout. Re-run the bot.');
+    await ctx.close(); process.exit(1);
+  }
+
+  console.log('✅ Logged in. Switching to headless...');
+  await ctx.close(); // saves the profile to disk
+
+  // ── 3. Relaunch headless using the freshly saved session ─────────────────
+  ctx = await chromium.launchPersistentContext(USER_DATA_DIR, { ...ctxOptions, headless: true });
+  page = ctx.pages()[0] ?? (await ctx.newPage());
+  await page.goto('https://www.messenger.com/', { waitUntil: 'domcontentloaded' }).catch(() => {});
+  await page.waitForTimeout(2000);
+  console.log('✅ Running headless — no visible window.');
+  return page;
 }
 
 /**
@@ -374,7 +365,7 @@ async function checkAndReply(page, repliedTo) {
     await page.goto(fullUrl, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
     await page.waitForTimeout(2200);
 
-    const last = await getLastIncomingMessage(page);
+    const { last, history: pageHistory } = await getThreadMessages(page);
     if (!last || !last.text || last.text.length < 2) {
       if (DEBUG) console.log(`[skip] threadId=${threadId} no incoming text found`);
       continue;
@@ -389,6 +380,10 @@ async function checkAndReply(page, repliedTo) {
       if (DEBUG) console.log(`[skip] threadId=${threadId} already replied (key seen)`);
       continue;
     }
+
+    // Seed the in-memory session with the visible page history so the AI has
+    // context even after a bot restart (avoids re-greeting, remembers prior cars).
+    seedSessionFromHistory(threadId, pageHistory);
 
     console.log(`\n[NEW MSG] Thread: ${threadId}${displayName ? ` (${displayName})` : ''}`);
     console.log(`  User: "${last.text.slice(0, 200)}"`);
@@ -455,16 +450,12 @@ async function checkAndReply(page, repliedTo) {
 }
 
 /**
- * Read the last INCOMING message from the currently open thread.
- *
- * Strategy:
- *  1. Collect all [role="row"] bubbles that contain a div[dir="auto"] with text.
- *  2. Determine direction by x-position (incoming = left-aligned).
- *  3. Skip: timestamp rows, date separators, outgoing rows, and rows whose
- *     text looks like a relative timestamp ("29w", "1h", "Ayer", etc.).
- *  4. Return the last incoming message, or null if none found.
+ * Read visible messages from the open thread.
+ * Returns { last, history } where:
+ *   last    — the most recent INCOMING message (or null)
+ *   history — array of { role: 'user'|'model', text } for the last N turns
  */
-async function getLastIncomingMessage(page) {
+async function getThreadMessages(page) {
   const result = await page
     .evaluate(() => {
       const convo = document.querySelector('div[role="main"]');
@@ -474,55 +465,63 @@ async function getLastIncomingMessage(page) {
         : window.innerWidth / 2;
 
       const rows = Array.from(document.querySelectorAll('div[role="row"]'));
-      if (!rows.length) return null;
+      if (!rows.length) return { last: null, history: [] };
 
-      // Timestamp / separator patterns to skip
       const tsRe = /^(\d{1,2}:\d{2}(\s?[ap]\.?\s?m\.?)?|hoy|today|ayer|yesterday|\d+[wdhms] ago|\d+[wdhms]|lunes|martes|miércoles|jueves|viernes|sábado|domingo|monday|tuesday|wednesday|thursday|friday|saturday|sunday)$/i;
 
-      for (let i = rows.length - 1; i >= 0; i--) {
-        const row = rows[i];
-
-        // Grab ONLY the direct message text — div[dir="auto"] inside the bubble.
-        // Using the innermost span avoids picking up the sender name label.
+      const messages = [];
+      for (const row of rows) {
         const bubbleDivs = Array.from(row.querySelectorAll('div[dir="auto"]'));
         if (!bubbleDivs.length) continue;
-
-        // Take the div with the most text (the actual message body)
         const bubble = bubbleDivs.reduce((a, b) =>
           (b.textContent?.length ?? 0) > (a.textContent?.length ?? 0) ? b : a
         );
         const text = (bubble.textContent ?? '').trim();
-
         if (!text || text.length < 2) continue;
         if (tsRe.test(text)) continue;
-        // Skip relative timestamps embedded anywhere (e.g. "· 29w")
         if (/·\s*\d+[wdhms]\b/.test(text)) continue;
 
-        // Direction: left-of-center = incoming, right-of-center = outgoing
         const rect = bubble.getBoundingClientRect();
         if (rect.width === 0) continue;
         const center = rect.left + rect.width / 2;
         const isOutgoing = center > convoCenter + 20;
 
-        if (isOutgoing) continue; // skip our own messages
-
-        return { text, isIncoming: true };
+        messages.push({ text, isOutgoing });
       }
-      return null;
+
+      if (!messages.length) return { last: null, history: [] };
+
+      // Build history array (last 10 turns max)
+      const history = messages.slice(-10).map(m => ({
+        role: m.isOutgoing ? 'model' : 'user',
+        text: m.text,
+      }));
+
+      // last = most recent INCOMING message
+      let last = null;
+      for (let i = messages.length - 1; i >= 0; i--) {
+        if (!messages[i].isOutgoing) { last = { text: messages[i].text, isIncoming: true }; break; }
+      }
+
+      return { last, history };
     })
-    .catch(() => null);
+    .catch(() => ({ last: null, history: [] }));
 
   return result;
 }
 
-function waitForEnter(prompt) {
-  return new Promise((resolveP) => {
-    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-    rl.question(prompt, () => {
-      rl.close();
-      resolveP();
-    });
-  });
+/**
+ * Seed the in-memory Gemini session history from the page's visible messages.
+ * Only seeds if the session has no history yet (i.e. fresh after a bot restart).
+ */
+function seedSessionFromHistory(threadId, pageHistory) {
+  const session = getSession(threadId);
+  if (session.history.length > 0 || pageHistory.length === 0) return;
+  session.history = pageHistory.map(m => ({
+    role: m.role,
+    parts: [{ text: m.text }],
+  }));
+  if (DEBUG) console.log(`[seed] seeded ${session.history.length} turns for thread ${threadId}`);
 }
 
 async function sendReply(page, text) {
