@@ -36,6 +36,7 @@ import {
   enqueueAndGenerateReply,
   _aldStock,
 } from './assistant-brain.mjs';
+import { crmCreateLead } from './fullmotor-crm.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(__dirname, '..');
@@ -53,6 +54,7 @@ const WHATSAPP_PHONE_NUMBER_ID = String(process.env.WHATSAPP_PHONE_NUMBER_ID ?? 
 const WHATSAPP_ACCESS_TOKEN = String(process.env.WHATSAPP_ACCESS_TOKEN ?? '').trim();
 const WHATSAPP_AUTO_REPLY = String(process.env.WHATSAPP_AUTO_REPLY ?? '').trim();
 const MAKE_INBOUND_SECRET = String(process.env.MAKE_INBOUND_SECRET ?? '').trim();
+const CHILEAUTOS_WEBHOOK_SECRET = String(process.env.CHILEAUTOS_WEBHOOK_SECRET ?? '').trim();
 const GEMINI_API_KEY = String(process.env.GEMINI_API_KEY ?? '').trim();
 const GEMINI_MODEL = String(process.env.GEMINI_MODEL ?? 'gemini-2.0-flash').trim();
 const MESSENGER_FALLBACK_REPLY = String(
@@ -444,6 +446,103 @@ async function sendWhatsAppText(toWaId, text) {
   if (!res.ok) {
     const err = await res.text();
     console.error('[whatsapp send]', res.status, err);
+  }
+}
+
+// ── ChileAutos lead webhook ───────────────────────────────────────────────────
+// ChileAutos POSTs here when a buyer fills the contact form on any listing.
+// Configure the URL in ChileAutos partner portal + set CHILEAUTOS_WEBHOOK_SECRET.
+app.post('/webhook/chileautos', express.json({ limit: '256kb' }), async (req, res) => {
+  if (CHILEAUTOS_WEBHOOK_SECRET) {
+    const provided = String(req.get('x-chileautos-secret') ?? req.query.secret ?? '').trim();
+    if (provided !== CHILEAUTOS_WEBHOOK_SECRET) {
+      console.warn('[chileautos-lead] 401 bad secret');
+      return res.sendStatus(401);
+    }
+  }
+  if (!req.body || typeof req.body !== 'object') return res.sendStatus(400);
+
+  res.sendStatus(200); // acknowledge fast — ChileAutos expects quick response
+
+  setImmediate(() =>
+    handleChileAutosLead(req.body).catch((e) => console.error('[chileautos-lead]', e)),
+  );
+});
+
+async function handleChileAutosLead(lead) {
+  const prospect = lead.prospect ?? {};
+  const item = lead.item ?? {};
+
+  const name = String(prospect.name ?? prospect.firstName ?? '').trim() || 'Prospecto ChileAutos';
+  const phone = String(prospect.phone ?? prospect.phoneNumber ?? '').replace(/\s+/g, '').trim();
+  const email = String(prospect.email ?? '').trim();
+  const make = String(item.make ?? '').trim();
+  const model = String(item.model ?? '').trim();
+  const year = String(item.year ?? '').trim();
+  const modeloStr = [make, model, year].filter(Boolean).join(' ');
+  const comments = String(lead.comments ?? '').trim();
+  const identifier = String(lead.identifier ?? '').trim();
+  const listingUrl = String(lead.environment?.url ?? lead.url ?? '').trim();
+
+  console.info('[chileautos-lead] received', { identifier, name, phone, email, modeloStr });
+
+  // ── 1. FullMotor CRM ───────────────────────────────────────────────────────
+  const crmMsg = [
+    `[CHILEAUTOS] Lead desde portal automotriz`,
+    modeloStr ? `Auto de interés: ${modeloStr}` : '',
+    comments ? `Comentario: ${comments}` : '',
+    identifier ? `ID ChileAutos: ${identifier}` : '',
+    listingUrl ? `Aviso: ${listingUrl}` : '',
+  ].filter(Boolean).join('\n');
+
+  const crmLeadId = await crmCreateLead({
+    nombre: name,
+    telefono: phone,
+    email,
+    marca: make,
+    modelo: modeloStr,
+    origen: 'PORTAL AUTOMOTRIZ',
+    mensaje: crmMsg,
+    link: listingUrl,
+  });
+  console.info('[chileautos-lead] CRM', { crmLeadId });
+
+  // ── 2. Google Sheet backup ─────────────────────────────────────────────────
+  await submitMessengerLead({
+    source: 'chileautos',
+    upsertKey: identifier || phone || email,
+    event: 'chileautos_lead',
+    sentAt: new Date().toISOString(),
+    psid: identifier,
+    fbName: name,
+    extractedName: name,
+    phone: phone || null,
+    email: email || null,
+    marketplaceCar: modeloStr ? { make, model, year } : null,
+    carsDetected: modeloStr ? [{ make, model, year }] : null,
+    lastMessage: comments || `Interesado en ${modeloStr}`,
+    lastBotReply: null,
+  });
+
+  // ── 3. Proactive WhatsApp outreach ─────────────────────────────────────────
+  // If ChileAutos gave us their phone, we reach out immediately on WhatsApp.
+  // The buyer then replies and the bot takes over the conversation.
+  if (phone && WHATSAPP_PHONE_NUMBER_ID && WHATSAPP_ACCESS_TOKEN) {
+    const digits = phone.replace(/\D/g, '').replace(/^0+/, '');
+    const waId = digits.startsWith('56') ? digits : `56${digits}`;
+    const firstName = name.split(' ')[0];
+    const carMention = modeloStr ? ` el ${modeloStr}` : ' uno de nuestros autos';
+    const proactiveMsg =
+      `Hola ${firstName} 👋 Soy el asistente de ALD Autos. Vi que te interesó${carMention} en ChileAutos. ¿Te puedo ayudar con más información o coordinar una visita?`;
+
+    // Pre-seed session so when they reply the bot already knows the context
+    const session = getSession(waId);
+    session.marketplaceCar = { source: 'chileautos', make, model, year };
+    session.contactInfo = { phone: waId, name, email };
+    session.profile = { name };
+
+    await sendWhatsAppText(waId, proactiveMsg);
+    console.info('[chileautos-lead] proactive WA sent', { waId, preview: proactiveMsg.slice(0, 80) });
   }
 }
 

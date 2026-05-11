@@ -6,6 +6,10 @@
  *   - scripts/messenger-personal.mjs   (Playwright personal Messenger bot)
  *   - scripts/whatsapp-personal.mjs    (whatsapp-web.js personal WhatsApp bot)
  *
+ * Inventory source (in priority order):
+ *   1. ChileAutos API (live) — set CHILEAUTOS_CLIENT_ID + CLIENT_SECRET + SELLER_ID
+ *   2. data/ald-stock-base.json (static fallback — used while credentials aren't ready)
+ *
  * Keep this module side-effect free on import — no Express, no servers.
  */
 import { createRequire } from 'module';
@@ -26,30 +30,185 @@ export const MESSENGER_FALLBACK_REPLY = String(
 export const GRAPH_VERSION = 'v21.0';
 const PAGE_ACCESS_TOKEN = String(process.env.MESSENGER_PAGE_ACCESS_TOKEN ?? '').trim();
 
-// ── Inventory ────────────────────────────────────────────────────────────────
-export const _aldStock = (() => {
-  try {
-    return _require('../data/ald-stock-base.json');
-  } catch {
-    return [];
-  }
-})();
+// ── ChileAutos credentials ────────────────────────────────────────────────────
+const CHILEAUTOS_CLIENT_ID = String(process.env.CHILEAUTOS_CLIENT_ID ?? '').trim();
+const CHILEAUTOS_CLIENT_SECRET = String(process.env.CHILEAUTOS_CLIENT_SECRET ?? '').trim();
+const CHILEAUTOS_SELLER_ID = String(process.env.CHILEAUTOS_SELLER_ID ?? '').trim();
+const CHILEAUTOS_TOKEN_URL = 'https://id.s.core.csnglobal.net/connect/token';
+// Staging base — will be swapped to production URL via env once you have prod creds
+const CHILEAUTOS_API_BASE = String(
+  process.env.CHILEAUTOS_API_BASE ??
+    'https://globalinventory-publicapi.stg.core.csnglobal.net/v1',
+).replace(/\/$/, '');
+const INVENTORY_REFRESH_MS = Number(process.env.INVENTORY_REFRESH_MS ?? 60 * 60 * 1000); // 1 h
 
-const _inventoryText = (() => {
-  if (!_aldStock.length) return '(inventario no disponible)';
-  const lines = _aldStock.map((car) => {
+// ── Inventory state (refreshable) ─────────────────────────────────────────────
+export let _aldStock = [];
+let _inventoryText = '(inventario no disponible)';
+let _makeIndex = new Map();
+
+async function _fetchChileAutosToken() {
+  const body = new URLSearchParams({
+    grant_type: 'client_credentials',
+    client_id: CHILEAUTOS_CLIENT_ID,
+    client_secret: CHILEAUTOS_CLIENT_SECRET,
+  });
+  const res = await fetch(CHILEAUTOS_TOKEN_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body,
+  });
+  if (!res.ok) throw new Error(`ChileAutos auth ${res.status}`);
+  const { access_token } = await res.json();
+  return access_token;
+}
+
+function _mapChileAutosCar(v) {
+  const spec = v.Specification ?? {};
+  const attrs = spec.Attributes ?? [];
+  const getAttr = (...names) => {
+    for (const n of names) {
+      const hit = attrs.find((a) => a.Name?.toLowerCase() === n.toLowerCase());
+      if (hit?.Value) return hit.Value;
+    }
+    return '';
+  };
+  const price =
+    v.PriceList?.find((p) => p.Currency === 'CLP')?.Amount ?? v.PriceList?.[0]?.Amount ?? 0;
+  const currency = v.PriceList?.[0]?.Currency ?? 'CLP';
+  const mileage = v.OdometerReadings?.[0]?.Value ?? 0;
+  const year = spec.ReleaseDate?.Year ?? null;
+  const color =
+    v.Colours?.find((c) => c.Location === 'Exterior')?.Name ?? v.Colours?.[0]?.Name ?? '';
+  const fuelType = getAttr('Combustible', 'Fuel Type', 'Tipo de combustible');
+  const transmission = getAttr('Transmisión', 'Transmision', 'Transmission', 'Caja');
+  // Use SellerReference if available (numeric ALD id), else strip UUID to digits
+  const numericId = String(v.SellerReference ?? v.Identifier ?? '')
+    .replace(/[^0-9]/g, '')
+    .slice(-8);
+  return {
+    id: `ald-${numericId}`,
+    make: spec.Make ?? '',
+    model: spec.Model ?? '',
+    year,
+    price,
+    currency,
+    mileage,
+    fuelType,
+    transmission,
+    color: color.toUpperCase(),
+    description: spec.Title ?? spec.ShortTitle ?? '',
+    imageUrl: v.Photos?.sort((a, b) => a.Order - b.Order)?.[0]?.Url ?? '',
+    features: [],
+    listSubtitle: spec.ShortTitle ?? '',
+    transmissionShort: transmission.toLowerCase().includes('auto') ? 'AT' : 'MT',
+    fuelBadge: fuelType.toUpperCase(),
+  };
+}
+
+async function _fetchChileAutosInventory() {
+  const token = await _fetchChileAutosToken();
+  const headers = {
+    Authorization: `Bearer ${token}`,
+    'x-seller-identifier': CHILEAUTOS_SELLER_ID,
+  };
+  const vehicles = [];
+  let page = 1;
+  while (true) {
+    const res = await fetch(
+      `${CHILEAUTOS_API_BASE}/vehicles/active_items?page=${page}&limit=100`,
+      { headers },
+    );
+    if (!res.ok) throw new Error(`ChileAutos inventory ${res.status}`);
+    const data = await res.json();
+    const items = Array.isArray(data)
+      ? data
+      : (data.items ?? data.vehicles ?? data.data ?? []);
+    if (!items.length) break;
+    vehicles.push(...items.map(_mapChileAutosCar));
+    if (items.length < 100) break;
+    page++;
+  }
+  return vehicles;
+}
+
+function _buildInventoryText(stock) {
+  if (!stock.length) return '(inventario no disponible)';
+  const lines = stock.map((car) => {
     const numericId = String(car.id).replace(/^ald-/, '');
-    const price = car.currency === 'CLP'
-      ? new Intl.NumberFormat('es-CL', { style: 'currency', currency: 'CLP', maximumFractionDigits: 0 }).format(car.price)
-      : `$${Number(car.price).toLocaleString('en-US')}`;
+    const price =
+      car.currency === 'CLP'
+        ? new Intl.NumberFormat('es-CL', {
+            style: 'currency',
+            currency: 'CLP',
+            maximumFractionDigits: 0,
+          }).format(car.price)
+        : `$${Number(car.price).toLocaleString('en-US')}`;
     const notes = [car.listHeadline, car.listSubtitle].filter(Boolean).join(' · ');
     const fichaUrl = `https://www.ald.cl/ficha/${numericId}/`;
     const noteLine = notes ? `\n  Notas: ${notes}` : '';
-    return `- ${car.year} ${car.make} ${car.model} (id ${numericId}): ${price}\n  KM: ${Number(car.mileage).toLocaleString('es-CL')} km · ${car.transmission} · ${car.fuelType}\n  Ficha: ${fichaUrl}${noteLine}`;
+    return (
+      `- ${car.year} ${car.make} ${car.model} (id ${numericId}): ${price}\n` +
+      `  KM: ${Number(car.mileage).toLocaleString('es-CL')} km · ${car.transmission} · ${car.fuelType}\n` +
+      `  Ficha: ${fichaUrl}${noteLine}`
+    );
   });
-  return lines.join('\n') + `\n\nResumen: ${_aldStock.length} unidades en inventario. Solo usa precios y datos de esta lista; si falta algo, ofrece confirmación con un ejecutivo.`;
-})();
+  return (
+    lines.join('\n') +
+    `\n\nResumen: ${stock.length} unidades en inventario. Solo usa precios y datos de esta lista; si falta algo, ofrece confirmación con un ejecutivo.`
+  );
+}
 
+function _buildMakeIndex(stock) {
+  const map = new Map();
+  for (const c of stock ?? []) {
+    const make = String(c?.make ?? '').trim();
+    if (!make) continue;
+    map.set(make.toLowerCase(), make);
+  }
+  map.set('range rover', 'Land Rover');
+  map.set('landrover', 'Land Rover');
+  return map;
+}
+
+async function _loadInventory() {
+  if (CHILEAUTOS_CLIENT_ID && CHILEAUTOS_CLIENT_SECRET && CHILEAUTOS_SELLER_ID) {
+    try {
+      const live = await _fetchChileAutosInventory();
+      if (live.length > 0) {
+        _aldStock = live;
+        _inventoryText = _buildInventoryText(live);
+        _makeIndex = _buildMakeIndex(live);
+        console.log(`[inventory] ${live.length} vehicles loaded from ChileAutos API`);
+        return;
+      }
+    } catch (e) {
+      console.warn(`[inventory] ChileAutos fetch failed (${e.message}) — using JSON fallback`);
+    }
+  }
+  try {
+    const json = _require('../data/ald-stock-base.json');
+    _aldStock = json;
+    _inventoryText = _buildInventoryText(json);
+    _makeIndex = _buildMakeIndex(json);
+    console.log(`[inventory] ${json.length} vehicles loaded from static JSON`);
+  } catch {
+    _aldStock = [];
+    _inventoryText = '(inventario no disponible)';
+    _makeIndex = new Map();
+    console.warn('[inventory] No inventory available');
+  }
+}
+
+// Initialize inventory on module load (top-level await — ES module)
+await _loadInventory();
+
+// Refresh in background every hour (unref so it doesn't block process exit)
+if (INVENTORY_REFRESH_MS > 0) {
+  setInterval(_loadInventory, INVENTORY_REFRESH_MS).unref();
+}
+
+// ── System prompt (built dynamically so refreshes pick up new inventory) ───────
 const _clientKnowledge = `
 Marca comercial: ALD Autos. Sitio: https://www.ald.cl — sección stock: /stock.
 UBICACIÓN: Comandante Malbec 13495, Lo Barnechea, Chile.
@@ -59,7 +218,8 @@ MONEDA: precios en pesos chilenos (CLP).
 Si el usuario pide un dato no listado, no inventes — ofrece derivar a un ejecutivo por WhatsApp o llamada.
 `.trim();
 
-export const MESSENGER_GEMINI_SYSTEM = `
+function _buildSystemPrompt() {
+  return `
 Eres el asesor de ventas de ALD Autos — seminuevos premium en Santiago. Eres experto, proactivo y humano. Tu meta: convertir cada conversación en una visita o contacto real.
 
 ═══════════════════════════════════════
@@ -69,7 +229,7 @@ REGLAS ABSOLUTAS (nunca las rompas)
 2. SOLO OFRECE LO QUE EXISTE en el inventario. Jamás inventes un auto, precio o característica.
 3. FILTRA POR CATEGORÍA PRIMERO: Si el cliente pide un tipo de vehículo (camioneta, SUV, sedán, etc.), solo muestra autos de esa categoría. No mezcles tipos aunque sean de la marca solicitada.
 4. FORMATO: Texto plano. Sin asteriscos, sin corchetes, sin markdown. URLs limpias: https://www.ald.cl/ficha/250702/ — nunca [link](url).
-5. RESPUESTAS BREVES POR DEFECTO. Máx 2 párrafos cortos, 1-2 frases cada uno. Si el cliente es claro y pide opciones, máx 3 autos en lista. Nunca repitas datos que ya diste. Apunta a 60-100 palabras totales; supera eso solo si te piden detalle explícito.
+5. RESPUESTAS BREVES POR DEFECTO. Máx 2 párrafos cortos, 1-2 frases cada uno. Si el cliente es claro y pide opciones, máx 3 autos en lista. Nunca repitas datos que ya diste. Apunta a 60-100 palabras totales; supera eso solo si te piden detalle explícito. IMPORTANTE: nunca termines una respuesta a media frase; siempre cierra con una idea completa.
 6. MENSAJE VAGO O CORTO (ej: "hola", "info", "precios", "qué tienes", emoji solo, 1-3 palabras sin contexto): NO listes autos todavía. Responde en máx 2 frases con UNA pregunta concreta para entender qué busca (tipo de vehículo, presupuesto o uso). Puedes mencionar 1 ejemplo destacado solo si ayuda a guiar. Nunca dumpees el catálogo.
 7. Emojis: máx 1 por respuesta, solo para calidez.
 8. LISTAS DE AUTOS: Cuando el cliente pidió opciones concretas y muestres 2 o más autos, SIEMPRE usa este formato exacto (un auto por línea, guión al inicio, sin texto extra antes de la lista):
@@ -109,21 +269,22 @@ PRIMER MENSAJE (saludo o "hola"):
 Saluda en 1 frase y haz UNA pregunta concreta para guiar. No listes autos en este turno — guía primero.
 
 Ejemplo correcto (breve):
-"¡Hola! Soy el asesor de ALD Autos 👋 Tenemos 95 seminuevos en Lo Barnechea. ¿Qué tipo de auto buscas — camioneta, SUV, sedán — y tienes un presupuesto en mente?"
+"¡Hola! Soy el asistente virtual de ALD Autos 👋 Tenemos ${_aldStock.length} seminuevos en Lo Barnechea. ¿Qué tipo de auto buscas — camioneta, SUV, sedán — y tienes un presupuesto en mente?"
 
 CUANDO EL CLIENTE DA UNA CATEGORÍA:
 Muestra 2-3 opciones concretas de esa categoría con precio y año. No hagas más preguntas antes de mostrar opciones — primero ofrece, luego afina.
 
 CUANDO EL CLIENTE DA CATEGORÍA + MARCA:
-Filtra al cruce exacto. Si hay 1 solo resultado, muéstralo con detalle completo (ficha, precio, km, transmisión). Si no hay ninguno, dilo honestamente y ofrece alternativas similares.
+Filtra al cruce exacto y responde con opciones de inmediato. Si hay 2+ resultados, muestra hasta 3 en lista. Si hay 1 solo resultado, muéstralo con detalle completo (ficha, precio, km, transmisión, combustible). Si no hay ninguno, dilo honestamente y ofrece alternativas similares.
 
 CUANDO EL CLIENTE MENCIONA UN AUTO QUE YA OFRECISTE:
 Si el cliente dice "me gusta la Mazda", "me interesa ese", "cuéntame más del Nissan", etc. refiriéndose a un auto que TÚ ya mencionaste en la conversación — NO preguntes qué tipo busca. Ya sabes exactamente a cuál se refiere. Muéstrale la ficha completa de ESE auto: precio, km, transmisión, combustible, y link. Luego ofrece agendar una visita.
 
 CUANDO EL CLIENTE DA SOLO UNA MARCA (sin haber visto opciones antes y sin categoría establecida):
-NUNCA listes todos los autos de esa marca — son tipos muy distintos y eso confunde.
-Primero pregunta: "¿Qué tipo de vehículo buscas — camioneta, SUV, sedán?"
-Si ya se estableció una categoría antes en la conversación, úsala directamente para filtrar.
+Responde con opciones de esa marca de inmediato (hasta 3), sin pedir primero categoría.
+Cada opción debe incluir: año, combustible, transmisión, precio y link.
+Si ya existe una categoría previa en la conversación, prioriza esa categoría al filtrar la marca.
+Si no hay unidades de esa marca, dilo explícitamente en una frase completa y ofrece de inmediato 2 alternativas reales del mismo tipo de vehículo que el cliente venía viendo.
 
 CUANDO EL CLIENTE TIENE PRESUPUESTO:
 Muestra los 2-3 mejores autos dentro de ese rango. Si el presupuesto es bajo para lo que pide, sugiere la opción más cercana que sí existe.
@@ -147,6 +308,7 @@ INVENTARIO COMPLETO
 ═══════════════════════════════════════
 ${_inventoryText}
 `.trim();
+}
 
 // ── Markdown stripper ────────────────────────────────────────────────────────
 export function stripMarkdown(text) {
@@ -162,6 +324,85 @@ export function stripMarkdown(text) {
     .trim();
 }
 
+function finalizeReplyText(text) {
+  if (!text) return null;
+  const clean = text.trim();
+  if (!clean) return null;
+  if (/[.!?…]$/.test(clean)) return clean;
+  const cut = Math.max(
+    clean.lastIndexOf('. '),
+    clean.lastIndexOf('! '),
+    clean.lastIndexOf('? '),
+  );
+  if (cut >= 40) return clean.slice(0, cut + 1).trim();
+  return `${clean}.`;
+}
+
+function fichaUrlFromCarId(carId) {
+  const m = String(carId ?? '').match(/(\d{4,})$/);
+  const numeric = m?.[1];
+  return numeric ? `https://www.ald.cl/ficha/${numeric}/` : null;
+}
+
+function formatClp(amount) {
+  const n = Number(amount);
+  if (!Number.isFinite(n)) return '';
+  return new Intl.NumberFormat('es-CL', {
+    style: 'currency',
+    currency: 'CLP',
+    maximumFractionDigits: 0,
+  }).format(n);
+}
+
+function detectMakeFromText(text) {
+  const t = String(text ?? '').toLowerCase();
+  const candidates = [..._makeIndex.keys()].sort((a, b) => b.length - a.length);
+  for (const mk of candidates) {
+    if (!mk) continue;
+    if (t.includes(mk)) return _makeIndex.get(mk) ?? null;
+  }
+  return null;
+}
+
+function buildMakeInventoryReply(make) {
+  const makeStr = String(make ?? '').trim();
+  if (!makeStr) return null;
+  const cars = (_aldStock ?? []).filter(
+    (c) => String(c?.make ?? '').trim().toLowerCase() === makeStr.toLowerCase(),
+  );
+  if (cars.length === 0) return null;
+
+  const top = cars
+    .slice()
+    .sort((a, b) => (Number(b?.year) || 0) - (Number(a?.year) || 0))
+    .slice(0, 3);
+
+  const lines = top
+    .map((c) => {
+      const year = Number(c?.year) || '';
+      const model = String(c?.model ?? '').trim();
+      const fuel = String(c?.fuelBadge ?? c?.fuelType ?? '').trim();
+      const trans =
+        String(c?.transmissionShort ?? '').trim() ||
+        (String(c?.transmission ?? '').toLowerCase().includes('auto') ? 'AT' : 'MT');
+      const price = formatClp(c?.price);
+      const url = fichaUrlFromCarId(c?.id);
+      if (!url) return null;
+      return `- ${makeStr} ${model} ${year} · ${fuel || '—'} · ${trans || '—'} · ${price || ''} → ${url}`;
+    })
+    .filter(Boolean);
+
+  if (lines.length === 0) return null;
+
+  return [
+    `Sí — tenemos ${makeStr} disponibles ahora mismo:`,
+    '',
+    ...lines,
+    '',
+    '¿Qué presupuesto aprox. tienes en mente? Así te recomiendo la mejor opción y alternativas similares.',
+  ].join('\n');
+}
+
 // ── Session store ────────────────────────────────────────────────────────────
 const _sessions = new Map();
 export const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
@@ -169,7 +410,7 @@ export const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
 export function getSession(key) {
   const existing = _sessions.get(key);
   const now = Date.now();
-  if (existing && (now - existing.seenAtMs) > SESSION_TTL_MS) {
+  if (existing && now - existing.seenAtMs > SESSION_TTL_MS) {
     _sessions.delete(key);
   }
   if (!_sessions.has(key)) {
@@ -231,7 +472,7 @@ export function detectCarsFromText(text) {
 export function detectInterestFromText(text) {
   const lower = text.toLowerCase();
   const categories = ['suv', 'sedan', 'sedán', 'pickup', 'camioneta', 'eléctrico', 'electrico', 'hatchback', 'coupe', 'coupé'];
-  return categories.filter(c => lower.includes(c));
+  return categories.filter((c) => lower.includes(c));
 }
 
 export function extractContactFromText(text) {
@@ -242,7 +483,9 @@ export function extractContactFromText(text) {
     text.match(/\b9\d{8}\b/)?.[0] ??
     text.match(/\+\d{8,12}\b/)?.[0] ??
     null;
-  const nameMatch = text.match(/(?:me llamo|soy|mi nombre es)\s+([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+(?:\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+)*)/i);
+  const nameMatch = text.match(
+    /(?:me llamo|soy|mi nombre es)\s+([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+(?:\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+)*)/i,
+  );
   const name = nameMatch?.[1] ?? null;
   return { email, phone, name, hasContact: Boolean(email || phone || name) };
 }
@@ -277,29 +520,27 @@ export async function submitMessengerLead(payload) {
 
 /**
  * Shared lead capture + CRM sync — fire-and-forget from every inbound handler.
- * @param {string} key    Conversation id (PSID, phone, thread id)
- * @param {string} text   Inbound user text
- * @param {string|null} reply   Bot reply (may be null on failure)
- * @param {'messenger'|'whatsapp'|'web_chat'|'messenger_personal'|'whatsapp_personal'} source
- * @param {{displayName?: string|null}} [opts] Optional display name (WA/Messenger personal)
  */
 export async function captureAndSyncLead(key, text, reply, source, opts = {}) {
   const session = getSession(key);
 
-  // Messenger Page: fetch profile from Graph API (requires Page token)
   if (source === 'messenger' && !session.profile && PAGE_ACCESS_TOKEN) {
     session.profile = await fetchMessengerProfile(key);
   }
 
-  // WhatsApp: key is the phone number
   if ((source === 'whatsapp' || source === 'whatsapp_personal') && !session.contactInfo?.phone) {
     session.contactInfo = session.contactInfo ?? {};
     session.contactInfo.phone = key;
   }
 
-  // Display name for personal channels
   if (opts.displayName && !session.profile) {
     session.profile = { name: opts.displayName };
+  }
+
+  // Detect ChileAutos referral from the pre-filled WhatsApp message
+  // ("me interesa el X que vi en ChileAutos")
+  if (!session.marketplaceCar && /chileautos/i.test(text)) {
+    session.marketplaceCar = { source: 'chileautos' };
   }
 
   const carsDetected = detectCarsFromText(text);
@@ -307,9 +548,9 @@ export async function captureAndSyncLead(key, text, reply, source, opts = {}) {
   const contactFound = extractContactFromText(text);
   const isFirstMessage = !session.leadSent;
 
-  const prevCarIds = new Set((session.carsDetected ?? []).map(c => c.id));
-  const newCarFound = (carsDetected ?? []).some(c => !prevCarIds.has(c.id));
-  const newCategory = interestCategories.some(c => !(session.interestCategories ?? []).includes(c));
+  const prevCarIds = new Set((session.carsDetected ?? []).map((c) => c.id));
+  const newCarFound = (carsDetected ?? []).some((c) => !prevCarIds.has(c.id));
+  const newCategory = interestCategories.some((c) => !(session.interestCategories ?? []).includes(c));
 
   if (contactFound.hasContact) {
     session.contactInfo = session.contactInfo ?? {};
@@ -319,7 +560,7 @@ export async function captureAndSyncLead(key, text, reply, source, opts = {}) {
   }
 
   if (carsDetected) {
-    const existingIds = new Set((session.carsDetected ?? []).map(c => c.id));
+    const existingIds = new Set((session.carsDetected ?? []).map((c) => c.id));
     for (const car of carsDetected) {
       if (!existingIds.has(car.id)) {
         session.carsDetected = [...(session.carsDetected ?? []), car];
@@ -363,17 +604,13 @@ export async function captureAndSyncLead(key, text, reply, source, opts = {}) {
     lastBotReply: reply?.slice(0, 500) ?? null,
   });
 
-  // FullMotor CRM
   const nombre =
-    session.profile?.name ??
-    session.contactInfo?.name ??
-    'Prospecto Web';
+    session.profile?.name ?? session.contactInfo?.name ?? 'Prospecto Web';
   const firstCar = session.carsDetected?.[0] ?? null;
-  const modeloStr = firstCar
-    ? `${firstCar.make} ${firstCar.model} ${firstCar.year}`
-    : '';
-  // Personal channels use the same origen bucket as the official channel
-  const normalizedSource = source.replace(/_personal$/, '');
+  const modeloStr = firstCar ? `${firstCar.make} ${firstCar.model} ${firstCar.year}` : '';
+  const normalizedSource = session.marketplaceCar?.source === 'chileautos'
+    ? 'chileautos'
+    : source.replace(/_personal$/, '');
   const origen = crmOrigen(normalizedSource, !!session.marketplaceCar);
 
   if (!session.crmLeadId) {
@@ -410,12 +647,16 @@ function getAi() {
   return _ai;
 }
 
-/**
- * Generate a Gemini reply grounded on the shared system prompt + session history.
- * Returns plain text (markdown stripped) or null on failure.
- */
+const GEMINI_MAX_OUTPUT_TOKENS = Number(process.env.GEMINI_MAX_OUTPUT_TOKENS ?? 550);
+
 export async function generateReply(key, userText) {
   const ai = getAi();
+  // Token-saver: answer pure brand availability queries directly from inventory
+  const make = detectMakeFromText(userText);
+  if (make) {
+    const direct = buildMakeInventoryReply(make);
+    if (direct) return direct;
+  }
   if (!ai) return null;
   const session = getSession(key);
   try {
@@ -427,13 +668,13 @@ export async function generateReply(key, userText) {
       model: GEMINI_MODEL,
       contents,
       config: {
-        systemInstruction: MESSENGER_GEMINI_SYSTEM,
-        temperature: 0.6,
-        maxOutputTokens: 350,
+        systemInstruction: _buildSystemPrompt(), // always fresh — picks up inventory refreshes
+        temperature: 0.35,
+        maxOutputTokens: GEMINI_MAX_OUTPUT_TOKENS,
       },
     });
     const raw = res.text?.trim() ?? null;
-    const reply = stripMarkdown(raw);
+    const reply = finalizeReplyText(stripMarkdown(raw));
     const usage = res.usageMetadata;
     if (usage) {
       console.info(
@@ -454,37 +695,11 @@ export async function generateReply(key, userText) {
   }
 }
 
-// ──────────────────────────────────────────────────────────────────────────
-// Message debouncer
-// ──────────────────────────────────────────────────────────────────────────
-// People often send 2-3 short messages back-to-back ("hola" / "busco una
-// camioneta" / "diésel hasta 15M"). Without debouncing we'd fire 3 separate
-// Gemini calls and reply 3 times — wasteful and weird-feeling.
-//
-// enqueueAndGenerateReply(key, text) buffers fragments per session. Each call
-// resets a quiet-period timer (default 3.5s). When the user stops typing for
-// that window, all fragments are merged with newlines and sent to Gemini as
-// one input. Only the LAST caller in the burst gets the reply; earlier callers
-// resolve to { reply: null } so they skip sending.
-//
-// A hard cap (default 12s) prevents a never-ending typer from hanging us.
-// ──────────────────────────────────────────────────────────────────────────
-
+// ── Message debouncer ─────────────────────────────────────────────────────────
 const DEBOUNCE_MS = Number(process.env.MESSAGE_DEBOUNCE_MS ?? 3500);
 const DEBOUNCE_MAX_MS = Number(process.env.MESSAGE_DEBOUNCE_MAX_MS ?? 12000);
 const _debounceBuffers = new Map();
 
-/**
- * Buffer a user message and generate one merged reply once the user stops
- * sending fragments.
- *
- * @param {string} sessionId  unique per channel+sender (psid, phone, threadId)
- * @param {string} userText   the incoming fragment
- * @returns {Promise<{ reply: string|null, merged: string, fragments: number }>}
- *   - `reply`: text to send (or `null` if a newer message superseded this one)
- *   - `merged`: the full combined text Gemini saw (use for lead capture)
- *   - `fragments`: how many fragments were merged (1 = no debounce happened)
- */
 export function enqueueAndGenerateReply(sessionId, userText) {
   return new Promise((resolve) => {
     let buf = _debounceBuffers.get(sessionId);
@@ -521,7 +736,6 @@ export function enqueueAndGenerateReply(sessionId, userText) {
 
       try {
         const reply = await generateReply(sessionId, merged);
-        // Earlier callers in the burst skip; only the last one sends.
         for (let i = 0; i < resolvers.length - 1; i++) {
           resolvers[i]({ reply: null, merged: '', fragments: 0 });
         }
@@ -532,11 +746,9 @@ export function enqueueAndGenerateReply(sessionId, userText) {
       }
     };
 
-    // Reset the quiet-period timer on every new fragment.
     if (buf.softTimer) clearTimeout(buf.softTimer);
     buf.softTimer = setTimeout(flush, DEBOUNCE_MS);
 
-    // Hard cap: even if the user keeps typing, flush after MAX_MS.
     if (!buf.hardTimer) {
       const remaining = Math.max(0, DEBOUNCE_MAX_MS - (Date.now() - buf.firstAt));
       buf.hardTimer = setTimeout(flush, remaining);

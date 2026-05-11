@@ -306,15 +306,13 @@ export async function crmUpdateLead(id, params) {
 
 /**
  * Map a lead source string to the CRM's "origen" dropdown value.
- * @param {'messenger'|'whatsapp'|'web_chat'|string} source
+ * @param {'chileautos'|'whatsapp'|'messenger'|'web_chat'|string} source
  * @param {boolean} [fromMarketplace]
  */
 export function crmOrigen(source, fromMarketplace = false) {
-  if (source === 'whatsapp') {
-    return fromMarketplace ? 'REFERIDO MERCADOLIBRE' : 'REDES SOCIALES';
-  }
-  if (source === 'messenger') {
-    return fromMarketplace ? 'REFERIDO MERCADOLIBRE' : 'REDES SOCIALES';
+  if (source === 'chileautos') return 'PORTAL AUTOMOTRIZ';
+  if (source === 'whatsapp' || source === 'messenger') {
+    return fromMarketplace ? 'PORTAL AUTOMOTRIZ' : 'REDES SOCIALES';
   }
   if (source === 'web_chat') return 'CONTACTO WEB';
   return 'OTRO';
