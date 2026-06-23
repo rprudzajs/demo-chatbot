@@ -37,6 +37,7 @@ import {
   _aldStock,
 } from './assistant-brain.mjs';
 import { crmCreateLead } from './fullmotor-crm.mjs';
+import { logMessage, getConversations, getMessages } from './db.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(__dirname, '..');
@@ -369,6 +370,18 @@ async function handleWhatsAppWebhook(body) {
           if (!waSession.contactInfo) {
             waSession.contactInfo = { phone: from };
           }
+
+          // ChileAutos referral — pre-load the exact car so bot skips "what are you looking for?"
+          if (!waSession.leadSent && /chileautos/i.test(text)) {
+            waSession.marketplaceCar = waSession.marketplaceCar ?? { source: 'chileautos' };
+            const carsFound = detectCarsFromText(text);
+            if (carsFound?.length) {
+              const car = carsFound[0];
+              waSession.carsDetected = [car];
+              waSession.marketplaceCar = { source: 'chileautos', ...car };
+            }
+          }
+
           const r = await enqueueAndGenerateReply(from, text);
           if (!r.reply && r.fragments === 0) {
             // Newer fragment from same WA took over.
@@ -385,6 +398,16 @@ async function handleWhatsAppWebhook(body) {
 
         await sendWhatsAppText(from, reply);
         console.info('[whatsapp send]', { from, replySource, preview: reply.slice(0, 80) });
+
+        // ── Log to dashboard DB ──
+        const waSession = getSession(from);
+        const carInterest = waSession.carsDetected?.[0]
+          ? `${waSession.carsDetected[0].make} ${waSession.carsDetected[0].model}`
+          : null;
+        setImmediate(() => Promise.all([
+          logMessage({ phone: from, name: waSession.profile?.name ?? null, source: 'whatsapp', role: 'user', content: mergedText, carInterest }),
+          logMessage({ phone: from, name: waSession.profile?.name ?? null, source: 'whatsapp', role: 'bot', content: reply, carInterest }),
+        ]).catch(e => console.error('[db]', e)));
 
         // ── Lead capture + CRM sync — fire and forget (use merged user text) ──
         setImmediate(() => captureAndSyncLead(from, mergedText, reply, 'whatsapp').catch(e => console.error('[wa lead]', e)));
@@ -449,12 +472,57 @@ async function sendWhatsAppText(toWaId, text) {
   }
 }
 
+// ── Dashboard API ─────────────────────────────────────────────────────────────
+const DASHBOARD_SECRET = String(process.env.DASHBOARD_SECRET ?? 'autoexpert-dashboard-2024').trim();
+
+function requireDashboardAuth(req, res, next) {
+  const token = req.get('x-dashboard-secret') ?? req.query.secret ?? '';
+  if (token !== DASHBOARD_SECRET) return res.sendStatus(401);
+  next();
+}
+
+app.get('/api/dashboard/inventory', requireDashboardAuth, (req, res) => {
+  res.json(_aldStock.map(c => ({
+    id: c.id,
+    year: c.year,
+    make: c.make,
+    model: c.model,
+    version: c.version ?? c.listHeadline ?? '',
+    description: c.description ?? c.listSubtitle ?? '',
+    price: c.price,
+    km: c.mileage ?? c.km,
+    patente: c.patente ?? '',
+    category: c.category ?? '',
+    color: c.color ?? '',
+    fuelType: c.fuelType ?? '',
+    transmission: c.transmission ?? '',
+    doors: c.doors ?? '',
+    bodyType: c.bodyType ?? '',
+    fullDescription: c.fullDescription ?? '',
+    features: c.features ?? [],
+  })));
+});
+
+app.get('/api/dashboard/conversations', requireDashboardAuth, async (req, res) => {
+  const conversations = await getConversations({ limit: 100 });
+  res.json(conversations);
+});
+
+app.get('/api/dashboard/conversations/:phone/messages', requireDashboardAuth, async (req, res) => {
+  const messages = await getMessages(req.params.phone);
+  res.json(messages);
+});
+
 // ── ChileAutos lead webhook ───────────────────────────────────────────────────
 // ChileAutos POSTs here when a buyer fills the contact form on any listing.
 // Configure the URL in ChileAutos partner portal + set CHILEAUTOS_WEBHOOK_SECRET.
 app.post('/webhook/chileautos', express.json({ limit: '256kb' }), async (req, res) => {
   if (CHILEAUTOS_WEBHOOK_SECRET) {
-    const provided = String(req.get('x-chileautos-secret') ?? req.query.secret ?? '').trim();
+    // ChileAutos sends fixed headers we configure. Check Authorization, access_token, or our custom header.
+    const authHeader = String(req.get('authorization') ?? '').trim();
+    const accessToken = String(req.get('access_token') ?? '').trim();
+    const customHeader = String(req.get('x-chileautos-secret') ?? req.query.secret ?? '').trim();
+    const provided = authHeader.replace(/^Bearer\s+/i, '').replace(/^Basic\s+/i, '') || accessToken || customHeader;
     if (provided !== CHILEAUTOS_WEBHOOK_SECRET) {
       console.warn('[chileautos-lead] 401 bad secret');
       return res.sendStatus(401);
@@ -470,21 +538,40 @@ app.post('/webhook/chileautos', express.json({ limit: '256kb' }), async (req, re
 });
 
 async function handleChileAutosLead(lead) {
-  const prospect = lead.prospect ?? {};
-  const item = lead.item ?? {};
+  // ChileAutos sends a C# DTO in PascalCase. Support both cases.
+  const P = lead.Prospect ?? lead.prospect ?? {};
+  const I = lead.Item ?? lead.item ?? {};
+  const spec = I.Specification ?? I.specification ?? {};
+  const env = lead.Environment ?? lead.environment ?? {};
 
-  const name = String(prospect.name ?? prospect.firstName ?? '').trim() || 'Prospecto ChileAutos';
-  const phone = String(prospect.phone ?? prospect.phoneNumber ?? '').replace(/\s+/g, '').trim();
-  const email = String(prospect.email ?? '').trim();
-  const make = String(item.make ?? '').trim();
-  const model = String(item.model ?? '').trim();
-  const year = String(item.year ?? '').trim();
+  const name = String(P.Name ?? P.name ?? '').trim() || 'Prospecto ChileAutos';
+  const email = String(P.Email ?? P.email ?? '').trim();
+
+  // Phone: prefer Mobile from array, fallback to first entry, then flat field
+  const phoneNums = P.PhoneNumbers ?? P.phoneNumbers ?? [];
+  const mobileEntry = phoneNums.find(p => /mobile/i.test(p.Type ?? p.type ?? '')) ?? phoneNums[0];
+  const phone = String(mobileEntry?.Number ?? mobileEntry?.number ?? P.phone ?? P.phoneNumber ?? '').replace(/\s+/g, '').trim();
+
+  const make = String(spec.Make ?? spec.make ?? I.make ?? '').trim();
+  const model = String(spec.Model ?? spec.model ?? I.model ?? '').trim();
+  const year = String(spec.ReleaseDate?.Year ?? spec.releaseDate?.year ?? I.year ?? '').trim();
   const modeloStr = [make, model, year].filter(Boolean).join(' ');
-  const comments = String(lead.comments ?? '').trim();
-  const identifier = String(lead.identifier ?? '').trim();
-  const listingUrl = String(lead.environment?.url ?? lead.url ?? '').trim();
 
-  console.info('[chileautos-lead] received', { identifier, name, phone, email, modeloStr });
+  // Price + km — ChileAutos includes these in the lead payload
+  const priceList = I.PriceList ?? I.priceList ?? [];
+  const price = priceList[0]?.Amount ?? priceList[0]?.amount ?? null;
+  const odometerReadings = I.OdometerReadings ?? I.odometerReadings ?? [];
+  const km = odometerReadings[0]?.Value ?? odometerReadings[0]?.value ?? null;
+
+  const comments = String(lead.Comments ?? lead.comments ?? '').trim();
+  const identifier = String(lead.Identifier ?? lead.identifier ?? '').trim();
+  const listingUrl = String(
+    I.Media?.Links?.find(l => l.Type === 'Details')?.Url ??
+    env.Url ?? env.url ?? lead.url ?? ''
+  ).trim();
+  const leadSource = String(lead.Source ?? lead.source ?? 'chileautos').trim();
+
+  console.info('[chileautos-lead] received', { identifier, name, phone, email, modeloStr, price, km, leadSource });
 
   // ── 1. FullMotor CRM ───────────────────────────────────────────────────────
   const crmMsg = [
@@ -535,9 +622,9 @@ async function handleChileAutosLead(lead) {
     const proactiveMsg =
       `Hola ${firstName} 👋 Soy el asistente de ALD Autos. Vi que te interesó${carMention} en ChileAutos. ¿Te puedo ayudar con más información o coordinar una visita?`;
 
-    // Pre-seed session so when they reply the bot already knows the context
+    // Pre-seed session so when they reply the bot already knows the context (including price/km from lead)
     const session = getSession(waId);
-    session.marketplaceCar = { source: 'chileautos', make, model, year };
+    session.marketplaceCar = { source: 'chileautos', make, model, year, price, km };
     session.contactInfo = { phone: waId, name, email };
     session.profile = { name };
 
@@ -545,6 +632,13 @@ async function handleChileAutosLead(lead) {
     console.info('[chileautos-lead] proactive WA sent', { waId, preview: proactiveMsg.slice(0, 80) });
   }
 }
+
+/* Dashboard page */
+app.get('/dashboard', (req, res) => {
+  const p = path.join(dist, 'dashboard.html');
+  if (!fs.existsSync(p)) return res.status(503).send('Dashboard not built — run npm run build');
+  res.sendFile(p);
+});
 
 /* Static SPA */
 if (!fs.existsSync(path.join(dist, 'index.html'))) {
