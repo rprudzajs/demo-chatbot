@@ -1,0 +1,636 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ALD Autos — Panel</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" />
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+    * { font-family: 'Inter', sans-serif; box-sizing: border-box; }
+    ::-webkit-scrollbar { width: 5px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #e5e7eb; border-radius: 10px; }
+    .nav-btn { transition: all 0.15s; }
+    .nav-btn:hover { background: #f3f4f6; }
+    .nav-btn.active { background: #eff6ff; color: #2563eb; }
+    .nav-btn.active i { color: #2563eb; }
+    .conv-row { cursor: pointer; transition: background 0.1s; }
+    .conv-row:hover { background: #f9fafb; }
+    .conv-row.active { background: #eff6ff; border-left: 3px solid #2563eb; }
+    .msg-user { background: #2563eb; color: #fff; margin-left: auto; border-radius: 16px 16px 4px 16px; }
+    .msg-bot  { background: #f1f5f9; color: #1e293b; margin-right: auto; border-radius: 16px 16px 16px 4px; }
+    .tab { display: none; }
+    .tab.active { display: flex; }
+    .tab-scroll { display: none; }
+    .tab-scroll.active { display: block; }
+  </style>
+</head>
+<body class="bg-gray-50 h-screen flex overflow-hidden">
+
+<!-- ─── LOGIN ─────────────────────────────────────────────────────────── -->
+<div id="loginScreen" class="fixed inset-0 bg-gray-50 flex items-center justify-center z-50">
+  <div class="bg-white rounded-2xl shadow-lg border border-gray-100 p-8 w-full max-w-sm">
+    <div class="flex items-center gap-3 mb-7">
+      <div class="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center">
+        <i class="fa-solid fa-car text-white"></i>
+      </div>
+      <div>
+        <h1 class="font-bold text-gray-900">ALD Autos</h1>
+        <p class="text-xs text-gray-400">Panel de gestión</p>
+      </div>
+    </div>
+    <label class="block text-sm font-medium text-gray-700 mb-2">Contraseña</label>
+    <input id="secretInput" type="password" placeholder="••••••••"
+      class="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 mb-2" />
+    <p id="loginError" class="text-red-500 text-xs mb-3 hidden">Contraseña incorrecta</p>
+    <button onclick="doLogin()"
+      class="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2.5 rounded-xl text-sm transition-colors">
+      Ingresar
+    </button>
+  </div>
+</div>
+
+<!-- ─── APP SHELL ──────────────────────────────────────────────────────── -->
+<div id="app" class="hidden flex-1 flex overflow-hidden">
+
+  <!-- SIDEBAR -->
+  <aside class="w-52 bg-white border-r border-gray-100 flex flex-col flex-shrink-0">
+    <div class="px-5 py-4 border-b border-gray-100">
+      <div class="flex items-center gap-2.5">
+        <div class="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center">
+          <i class="fa-solid fa-car text-white text-sm"></i>
+        </div>
+        <div>
+          <h1 class="font-bold text-gray-900 text-sm leading-tight">ALD Autos</h1>
+          <p class="text-xs text-gray-400">Panel de gestión</p>
+        </div>
+      </div>
+    </div>
+
+    <nav class="flex-1 p-3 space-y-0.5">
+      <button onclick="goTo('overview')" data-tab="overview"
+        class="nav-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-gray-600 text-left">
+        <i class="fa-solid fa-chart-pie text-gray-400 w-4 text-center"></i> Resumen
+      </button>
+      <button onclick="goTo('conversations')" data-tab="conversations"
+        class="nav-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-gray-600 text-left">
+        <i class="fa-solid fa-comment-dots text-gray-400 w-4 text-center"></i> Conversaciones
+      </button>
+      <button onclick="goTo('leads')" data-tab="leads"
+        class="nav-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-gray-600 text-left">
+        <i class="fa-solid fa-user-plus text-gray-400 w-4 text-center"></i> Leads
+      </button>
+      <button onclick="goTo('inventory')" data-tab="inventory"
+        class="nav-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-gray-600 text-left">
+        <i class="fa-solid fa-warehouse text-gray-400 w-4 text-center"></i> Inventario
+      </button>
+    </nav>
+
+    <div class="p-3 border-t border-gray-100">
+      <button onclick="doLogout()"
+        class="w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm text-gray-400 hover:text-gray-600 hover:bg-gray-50 transition-colors">
+        <i class="fa-solid fa-right-from-bracket w-4 text-center"></i> Cerrar sesión
+      </button>
+    </div>
+  </aside>
+
+  <!-- MAIN -->
+  <div class="flex-1 flex flex-col overflow-hidden">
+
+    <!-- ── OVERVIEW ── -->
+    <div id="tab-overview" class="tab-scroll active flex-1 overflow-y-auto p-6">
+      <div class="mb-6">
+        <h2 class="text-xl font-bold text-gray-900">Resumen</h2>
+        <p class="text-sm text-gray-400 mt-0.5">Vista general del negocio</p>
+      </div>
+
+      <!-- Stat cards -->
+      <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+        <div class="bg-white rounded-2xl border border-gray-100 p-5">
+          <div class="flex items-center justify-between mb-3">
+            <span class="text-xs font-semibold text-gray-400 uppercase tracking-wide">Conversaciones</span>
+            <div class="w-8 h-8 bg-blue-50 rounded-lg flex items-center justify-center">
+              <i class="fa-solid fa-comment-dots text-blue-500 text-sm"></i>
+            </div>
+          </div>
+          <p id="stat-convs" class="text-3xl font-bold text-gray-900">—</p>
+          <p class="text-xs text-gray-400 mt-1">total registradas</p>
+        </div>
+        <div class="bg-white rounded-2xl border border-gray-100 p-5">
+          <div class="flex items-center justify-between mb-3">
+            <span class="text-xs font-semibold text-gray-400 uppercase tracking-wide">Leads</span>
+            <div class="w-8 h-8 bg-green-50 rounded-lg flex items-center justify-center">
+              <i class="fa-solid fa-user-plus text-green-500 text-sm"></i>
+            </div>
+          </div>
+          <p id="stat-leads" class="text-3xl font-bold text-gray-900">—</p>
+          <p class="text-xs text-gray-400 mt-1">recibidos en total</p>
+        </div>
+        <div class="bg-white rounded-2xl border border-gray-100 p-5">
+          <div class="flex items-center justify-between mb-3">
+            <span class="text-xs font-semibold text-gray-400 uppercase tracking-wide">Activos hoy</span>
+            <div class="w-8 h-8 bg-orange-50 rounded-lg flex items-center justify-center">
+              <i class="fa-solid fa-fire text-orange-500 text-sm"></i>
+            </div>
+          </div>
+          <p id="stat-today" class="text-3xl font-bold text-gray-900">—</p>
+          <p class="text-xs text-gray-400 mt-1">últimas 24 horas</p>
+        </div>
+        <div class="bg-white rounded-2xl border border-gray-100 p-5">
+          <div class="flex items-center justify-between mb-3">
+            <span class="text-xs font-semibold text-gray-400 uppercase tracking-wide">Inventario</span>
+            <div class="w-8 h-8 bg-purple-50 rounded-lg flex items-center justify-center">
+              <i class="fa-solid fa-car text-purple-500 text-sm"></i>
+            </div>
+          </div>
+          <p id="stat-inv" class="text-3xl font-bold text-gray-900">—</p>
+          <p class="text-xs text-gray-400 mt-1">autos en stock</p>
+        </div>
+      </div>
+
+      <!-- Recent convs -->
+      <div class="bg-white rounded-2xl border border-gray-100 p-5">
+        <div class="flex items-center justify-between mb-4">
+          <h3 class="font-semibold text-gray-800">Conversaciones recientes</h3>
+          <button onclick="goTo('conversations')" class="text-xs text-blue-600 hover:underline">Ver todas →</button>
+        </div>
+        <div id="recentList" class="divide-y divide-gray-50">
+          <div class="text-center text-gray-400 text-sm py-8">
+            <i class="fa-solid fa-spinner fa-spin text-xl mb-2 block"></i>Cargando...
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── CONVERSATIONS ── -->
+    <div id="tab-conversations" class="tab flex-1 overflow-hidden">
+      <!-- Left pane -->
+      <aside class="w-72 bg-white border-r border-gray-100 flex flex-col flex-shrink-0">
+        <div class="p-4 border-b border-gray-100">
+          <div class="relative">
+            <i class="fa-solid fa-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2 text-gray-300 text-sm"></i>
+            <input id="convSearch" type="text" placeholder="Buscar conversación..."
+              oninput="filterConvs()"
+              class="w-full pl-9 pr-4 py-2 text-sm border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          </div>
+        </div>
+        <div id="convList" class="overflow-y-auto flex-1">
+          <div class="text-center text-gray-400 text-sm py-12">
+            <i class="fa-solid fa-spinner fa-spin text-xl mb-2 block"></i>Cargando...
+          </div>
+        </div>
+      </aside>
+      <!-- Right pane -->
+      <div class="flex-1 flex flex-col bg-gray-50 overflow-hidden">
+        <div id="emptyState" class="flex-1 flex items-center justify-center">
+          <div class="text-center text-gray-400">
+            <i class="fa-regular fa-comment-dots text-4xl mb-3 block"></i>
+            <p class="font-medium text-sm">Selecciona una conversación</p>
+          </div>
+        </div>
+        <div id="threadView" class="hidden flex-col h-full overflow-hidden">
+          <div id="threadHeader" class="bg-white border-b border-gray-100 px-6 py-4 flex-shrink-0"></div>
+          <div id="messageList" class="flex-1 overflow-y-auto p-6 flex flex-col gap-3"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── LEADS ── -->
+    <div id="tab-leads" class="tab-scroll flex-1 overflow-y-auto p-6">
+      <div class="mb-6 flex items-center justify-between gap-4">
+        <div>
+          <h2 class="text-xl font-bold text-gray-900">Leads</h2>
+          <p class="text-sm text-gray-400 mt-0.5">Clientes interesados recibidos</p>
+        </div>
+        <div class="relative">
+          <i class="fa-solid fa-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2 text-gray-300 text-sm"></i>
+          <input id="leadSearch" type="text" placeholder="Buscar lead..." oninput="filterLeads()"
+            class="pl-9 pr-4 py-2 text-sm border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 w-56" />
+        </div>
+      </div>
+      <div class="bg-white rounded-2xl border border-gray-100 overflow-hidden">
+        <table class="w-full text-sm">
+          <thead>
+            <tr class="border-b border-gray-100 bg-gray-50">
+              <th class="text-left px-5 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wide">Fuente</th>
+              <th class="text-left px-5 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wide">Nombre</th>
+              <th class="text-left px-5 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wide">Teléfono</th>
+              <th class="text-left px-5 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wide">Auto</th>
+              <th class="text-left px-5 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wide">CRM</th>
+              <th class="text-left px-5 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wide">Fecha</th>
+            </tr>
+          </thead>
+          <tbody id="leadsBody">
+            <tr><td colspan="6" class="text-center text-gray-400 py-12 text-sm">
+              <i class="fa-solid fa-spinner fa-spin text-xl mb-2 block"></i>Cargando...
+            </td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ── INVENTORY ── -->
+    <div id="tab-inventory" class="tab-scroll flex-1 overflow-y-auto p-6">
+      <div class="mb-6 flex items-center justify-between gap-4">
+        <div>
+          <h2 class="text-xl font-bold text-gray-900">Inventario</h2>
+          <p id="invSubtitle" class="text-sm text-gray-400 mt-0.5">Autos en stock</p>
+        </div>
+        <div class="relative">
+          <i class="fa-solid fa-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2 text-gray-300 text-sm"></i>
+          <input id="invSearch" type="text" placeholder="Buscar auto..." oninput="filterInventory()"
+            class="pl-9 pr-4 py-2 text-sm border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 w-56" />
+        </div>
+      </div>
+      <div id="invGrid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+        <div class="col-span-full text-center text-gray-400 py-12">
+          <i class="fa-solid fa-spinner fa-spin text-xl mb-2 block"></i>Cargando inventario...
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /main -->
+</div><!-- /app -->
+
+<script>
+let _secret = '';
+let _convs = [];
+let _leads = [];
+let _inventory = [];
+let _activePhone = null;
+
+// ── Auth ──────────────────────────────────────────────────────────────────
+function doLogin() {
+  const val = document.getElementById('secretInput').value.trim();
+  if (!val) return;
+  _secret = val;
+  fetchStats().then(ok => {
+    if (ok) {
+      localStorage.setItem('dash_secret', val);
+      document.getElementById('loginScreen').classList.add('hidden');
+      document.getElementById('app').classList.remove('hidden');
+      document.getElementById('app').classList.add('flex');
+      goTo('overview');
+      startPolling();
+    } else {
+      document.getElementById('loginError').classList.remove('hidden');
+      _secret = '';
+    }
+  });
+}
+
+document.getElementById('secretInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter') doLogin();
+});
+
+function doLogout() {
+  localStorage.removeItem('dash_secret');
+  location.reload();
+}
+
+window.addEventListener('DOMContentLoaded', () => {
+  const stored = localStorage.getItem('dash_secret');
+  if (stored) {
+    _secret = stored;
+    document.getElementById('secretInput').value = stored;
+    doLogin();
+  }
+});
+
+// ── API ───────────────────────────────────────────────────────────────────
+async function api(path) {
+  const sep = path.includes('?') ? '&' : '?';
+  const res = await fetch(`${path}${sep}secret=${encodeURIComponent(_secret)}`);
+  if (res.status === 401) return null;
+  return res.json();
+}
+
+async function fetchStats() {
+  const data = await api('/api/dashboard/stats');
+  if (!data) return false;
+  document.getElementById('stat-convs').textContent  = data.conversations ?? 0;
+  document.getElementById('stat-leads').textContent  = data.leads ?? 0;
+  document.getElementById('stat-today').textContent  = data.today ?? 0;
+  document.getElementById('stat-inv').textContent    = data.inventory ?? 0;
+  return true;
+}
+
+async function fetchConvs() {
+  const data = await api('/api/dashboard/conversations');
+  if (!data) return;
+  _convs = data;
+  renderConvList();
+  renderRecentList();
+}
+
+async function fetchLeads() {
+  const data = await api('/api/dashboard/leads');
+  if (!data) return;
+  _leads = data;
+  renderLeads();
+}
+
+async function fetchInventory() {
+  const data = await api('/api/dashboard/inventory');
+  if (!data) return;
+  _inventory = data;
+  document.getElementById('invSubtitle').textContent = `${data.length} autos en stock`;
+  document.getElementById('stat-inv').textContent = data.length;
+  renderInventory();
+}
+
+async function fetchMessages(phone) {
+  const data = await api(`/api/dashboard/conversations/${encodeURIComponent(phone)}/messages`);
+  if (!data) return;
+  renderThread(data);
+}
+
+function startPolling() {
+  setInterval(() => {
+    fetchStats();
+    if (_convs.length || document.getElementById('tab-conversations').classList.contains('active')) fetchConvs();
+    if (_activePhone) fetchMessages(_activePhone);
+  }, 30000);
+}
+
+// ── Navigation ────────────────────────────────────────────────────────────
+function goTo(tab) {
+  document.querySelectorAll('.nav-btn').forEach(el => {
+    el.classList.toggle('active', el.dataset.tab === tab);
+  });
+
+  document.querySelectorAll('.tab').forEach(el => el.classList.remove('active'));
+  document.querySelectorAll('.tab-scroll').forEach(el => el.classList.remove('active'));
+
+  const el = document.getElementById(`tab-${tab}`);
+  el.classList.add('active');
+
+  if (tab === 'overview')       { fetchStats(); fetchConvs(); }
+  if (tab === 'conversations')  fetchConvs();
+  if (tab === 'leads')          fetchLeads();
+  if (tab === 'inventory')      fetchInventory();
+}
+
+// ── Overview ──────────────────────────────────────────────────────────────
+function renderRecentList() {
+  const el = document.getElementById('recentList');
+  const recent = _convs.slice(0, 6);
+  if (!recent.length) {
+    el.innerHTML = '<p class="text-center text-gray-400 text-sm py-8">Sin conversaciones aún</p>';
+    return;
+  }
+  el.innerHTML = recent.map(c => `
+    <div class="flex items-center gap-4 py-3 cursor-pointer hover:bg-gray-50 -mx-2 px-2 rounded-xl transition-colors"
+         onclick="goTo('conversations'); setTimeout(()=>openConv('${c.phone}'),80)">
+      <div class="w-9 h-9 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center font-semibold text-xs flex-shrink-0">
+        ${getInitials(c.name || c.phone)}
+      </div>
+      <div class="flex-1 min-w-0">
+        <div class="flex items-center justify-between gap-2">
+          <span class="font-semibold text-sm text-gray-800 truncate">${escHtml(c.name || 'Desconocido')}</span>
+          <span class="text-xs text-gray-400 flex-shrink-0">${fmtTime(c.last_message_at)}</span>
+        </div>
+        <div class="flex items-center gap-2 mt-0.5">
+          ${badge(c.source)}
+          ${c.car_interest ? `<span class="text-xs text-blue-600 truncate"><i class="fa-solid fa-car mr-1 text-xs"></i>${escHtml(c.car_interest)}</span>` : ''}
+        </div>
+        ${c.last_message ? `<p class="text-xs text-gray-400 mt-0.5 truncate">${escHtml(c.last_message)}</p>` : ''}
+      </div>
+    </div>
+  `).join('');
+}
+
+// ── Conversations ─────────────────────────────────────────────────────────
+function filterConvs() {
+  renderConvList(document.getElementById('convSearch').value.toLowerCase());
+}
+
+function renderConvList(filter = '') {
+  const list = document.getElementById('convList');
+  const filtered = filter
+    ? _convs.filter(c => (c.name||'').toLowerCase().includes(filter)
+        || (c.phone||'').includes(filter)
+        || (c.car_interest||'').toLowerCase().includes(filter))
+    : _convs;
+
+  if (!filtered.length) {
+    list.innerHTML = '<p class="text-center text-gray-400 text-sm py-12">Sin conversaciones</p>';
+    return;
+  }
+
+  list.innerHTML = filtered.map(c => `
+    <div class="conv-row ${c.phone === _activePhone ? 'active' : ''} px-4 py-3 border-b border-gray-50 border-l-[3px] border-l-transparent"
+         onclick="openConv('${c.phone}')">
+      <div class="flex items-start gap-3">
+        <div class="w-9 h-9 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center font-semibold text-xs flex-shrink-0">
+          ${getInitials(c.name || c.phone)}
+        </div>
+        <div class="flex-1 min-w-0">
+          <div class="flex items-center justify-between gap-1">
+            <span class="font-semibold text-sm text-gray-800 truncate">${escHtml(c.name || 'Desconocido')}</span>
+            <span class="text-xs text-gray-400 flex-shrink-0">${fmtTime(c.last_message_at)}</span>
+          </div>
+          <div class="flex items-center gap-1 mt-0.5">
+            ${badge(c.source)}
+            <span class="text-xs text-gray-400 truncate">${c.phone}</span>
+          </div>
+          ${c.car_interest ? `<p class="text-xs text-blue-600 mt-0.5 truncate"><i class="fa-solid fa-car mr-1"></i>${escHtml(c.car_interest)}</p>` : ''}
+          ${c.last_message ? `<p class="text-xs text-gray-400 mt-1 truncate">${escHtml(c.last_message)}</p>` : ''}
+        </div>
+      </div>
+    </div>`).join('');
+}
+
+function openConv(phone) {
+  _activePhone = phone;
+  renderConvList(document.getElementById('convSearch').value.toLowerCase());
+
+  document.getElementById('emptyState').classList.add('hidden');
+  const tv = document.getElementById('threadView');
+  tv.classList.remove('hidden');
+  tv.classList.add('flex');
+
+  document.getElementById('messageList').innerHTML =
+    '<div class="text-center text-gray-400 py-8"><i class="fa-solid fa-spinner fa-spin text-xl"></i></div>';
+
+  const conv = _convs.find(c => c.phone === phone);
+  if (conv) {
+    document.getElementById('threadHeader').innerHTML = `
+      <div class="flex items-center gap-3">
+        <div class="w-9 h-9 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center font-semibold text-sm">
+          ${getInitials(conv.name || conv.phone)}
+        </div>
+        <div>
+          <div class="flex items-center gap-2">
+            <h3 class="font-bold text-gray-800">${escHtml(conv.name || 'Desconocido')}</h3>
+            ${badge(conv.source)}
+          </div>
+          <p class="text-xs text-gray-400">${conv.phone}</p>
+        </div>
+        ${conv.car_interest ? `
+        <div class="ml-auto bg-blue-50 text-blue-600 text-xs font-medium px-3 py-1.5 rounded-full">
+          <i class="fa-solid fa-car mr-1"></i>${escHtml(conv.car_interest)}
+        </div>` : ''}
+      </div>`;
+  }
+  fetchMessages(phone);
+}
+
+function renderThread(messages) {
+  const list = document.getElementById('messageList');
+  if (!messages.length) {
+    list.innerHTML = '<p class="text-center text-gray-400 text-sm py-8">Sin mensajes aún</p>';
+    return;
+  }
+  list.innerHTML = messages.map(m => {
+    const isUser = m.role === 'user';
+    return `
+      <div class="flex ${isUser ? 'justify-end' : 'justify-start'}">
+        <div class="max-w-[72%]">
+          <div class="px-4 py-2.5 text-sm leading-relaxed ${isUser ? 'msg-user' : 'msg-bot'}">
+            ${escHtml(m.content)}
+          </div>
+          <p class="text-xs text-gray-400 mt-1 ${isUser ? 'text-right' : 'text-left'} px-1">
+            ${isUser ? 'Cliente' : '🤖 Bot'} · ${fmtTime(m.created_at)}
+          </p>
+        </div>
+      </div>`;
+  }).join('');
+  list.scrollTop = list.scrollHeight;
+}
+
+// ── Leads ─────────────────────────────────────────────────────────────────
+function filterLeads() {
+  const q = document.getElementById('leadSearch').value.toLowerCase();
+  renderLeads(q);
+}
+
+function renderLeads(filter = '') {
+  const body = document.getElementById('leadsBody');
+  const data = filter
+    ? _leads.filter(l =>
+        (l.name||'').toLowerCase().includes(filter) ||
+        (l.phone||'').includes(filter) ||
+        (`${l.car_make||''} ${l.car_model||''}`).toLowerCase().includes(filter))
+    : _leads;
+
+  if (!data.length) {
+    body.innerHTML = '<tr><td colspan="6" class="text-center text-gray-400 py-16 text-sm">Sin leads registrados aún</td></tr>';
+    return;
+  }
+
+  body.innerHTML = data.map(l => `
+    <tr class="border-b border-gray-50 hover:bg-gray-50 transition-colors">
+      <td class="px-5 py-3.5">${badge(l.source)}</td>
+      <td class="px-5 py-3.5 font-medium text-gray-800">${escHtml(l.name || '—')}</td>
+      <td class="px-5 py-3.5 text-gray-500 font-mono text-xs">${l.phone}</td>
+      <td class="px-5 py-3.5 text-gray-600">${[l.car_year, l.car_make, l.car_model].filter(Boolean).join(' ') || '—'}</td>
+      <td class="px-5 py-3.5">
+        ${l.crm_lead_id
+          ? `<span class="text-xs bg-green-50 text-green-700 px-2 py-0.5 rounded-lg font-medium">${escHtml(l.crm_lead_id)}</span>`
+          : '<span class="text-gray-300 text-xs">—</span>'}
+      </td>
+      <td class="px-5 py-3.5 text-gray-400 text-xs">${fmtDate(l.created_at)}</td>
+    </tr>`).join('');
+}
+
+// ── Inventory ─────────────────────────────────────────────────────────────
+function filterInventory() {
+  const q = document.getElementById('invSearch').value.toLowerCase();
+  renderInventory(q);
+}
+
+function renderInventory(filter = '') {
+  const grid = document.getElementById('invGrid');
+  const data = filter
+    ? _inventory.filter(c => `${c.make} ${c.model} ${c.version} ${c.color}`.toLowerCase().includes(filter))
+    : _inventory;
+
+  if (!data.length) {
+    grid.innerHTML = '<div class="col-span-full text-center text-gray-400 py-12 text-sm">Sin autos en inventario</div>';
+    return;
+  }
+
+  const fuelEmoji = { 'Bencina': '⛽', 'Diésel': '🛢️', 'Híbrido': '🔋', 'Eléctrico': '⚡' };
+
+  grid.innerHTML = data.map(c => {
+    const imgId = c.id.replace('fm-', '');
+    const price = c.price ? '$' + Number(c.price).toLocaleString('es-CL') : 'Sin precio';
+    const km    = c.km    ? Number(c.km).toLocaleString('es-CL') + ' km' : '—';
+    const fuel  = c.fuelType ? `${fuelEmoji[c.fuelType]||'⛽'} ${c.fuelType}` : '';
+    const trans = c.transmission === 'Automático' ? 'AT' : c.transmission === 'Manual' ? 'MT' : '';
+    const tags  = [fuel, trans, c.color ? `🎨 ${c.color}` : '', c.doors ? `${c.doors} ptas` : ''].filter(Boolean);
+
+    return `
+    <div class="bg-white rounded-2xl border border-gray-100 overflow-hidden hover:shadow-md transition-shadow group">
+      <div class="aspect-video bg-gray-100 relative overflow-hidden">
+        <img src="https://www.rtautomotriz.com/images/ALD/Ext${imgId}-1.jpg"
+             class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+             onerror="this.parentElement.innerHTML='<div class=\\'w-full h-full flex flex-col items-center justify-center text-gray-300\\'><i class=\\'fa-solid fa-car text-3xl mb-2\\'></i><span class=\\'text-xs\\'>Sin foto</span></div>'" />
+        <div class="absolute top-2 right-2 bg-white/90 backdrop-blur-sm text-xs font-bold px-2 py-0.5 rounded-lg text-gray-700 shadow-sm">
+          ${escHtml(c.year)}
+        </div>
+        ${c.category ? `<div class="absolute top-2 left-2 bg-blue-600/90 text-white text-xs px-2 py-0.5 rounded-lg">${escHtml(c.category)}</div>` : ''}
+      </div>
+      <div class="p-4">
+        <h3 class="font-bold text-gray-900">${escHtml(c.make)} ${escHtml(c.model)}</h3>
+        <p class="text-xs text-gray-400 mt-0.5 truncate" title="${escHtml(c.version)}">${escHtml(c.version || c.description || '—')}</p>
+        <div class="flex items-baseline gap-2 mt-3">
+          <span class="text-blue-600 font-bold">${price}</span>
+          <span class="text-gray-400 text-xs">${km}</span>
+        </div>
+        ${tags.length ? `
+        <div class="flex flex-wrap gap-1.5 mt-3">
+          ${tags.map(t => `<span class="text-xs bg-gray-50 text-gray-500 px-2 py-0.5 rounded-lg border border-gray-100">${escHtml(t)}</span>`).join('')}
+        </div>` : ''}
+        ${c.patente ? `<p class="text-xs text-gray-300 mt-2 font-mono tracking-wider">${c.patente}</p>` : ''}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────
+function getInitials(str) {
+  if (!str) return '?';
+  const parts = str.trim().split(/\s+/);
+  return parts.length >= 2
+    ? (parts[0][0] + parts[1][0]).toUpperCase()
+    : str.slice(0, 2).toUpperCase();
+}
+
+function fmtTime(iso) {
+  if (!iso) return '';
+  const d = new Date(iso), now = new Date();
+  const mins = Math.floor((now - d) / 60000);
+  if (mins < 1) return 'ahora';
+  if (mins < 60) return `${mins}m`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h`;
+  return d.toLocaleDateString('es-CL', { day: 'numeric', month: 'short' });
+}
+
+function fmtDate(iso) {
+  if (!iso) return '—';
+  return new Date(iso).toLocaleDateString('es-CL', { day: 'numeric', month: 'short', year: 'numeric' });
+}
+
+function badge(source) {
+  const map = {
+    whatsapp:   ['bg-green-100 text-green-700',  'fa-brands fa-whatsapp',             'WhatsApp'],
+    chileautos: ['bg-orange-100 text-orange-700', 'fa-solid fa-tag',                  'ChileAutos'],
+    messenger:  ['bg-blue-100 text-blue-700',     'fa-brands fa-facebook-messenger',  'Messenger'],
+    web_chat:   ['bg-purple-100 text-purple-700', 'fa-solid fa-globe',                'Web'],
+  };
+  const [cls, icon, label] = map[source] || ['bg-gray-100 text-gray-500', 'fa-solid fa-circle', source || '?'];
+  return `<span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium ${cls}">
+    <i class="${icon} text-xs"></i>${label}</span>`;
+}
+
+function escHtml(str) {
+  return String(str ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+</script>
+</body>
+</html>

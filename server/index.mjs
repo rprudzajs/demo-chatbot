@@ -37,7 +37,7 @@ import {
   _aldStock,
 } from './assistant-brain.mjs';
 import { crmCreateLead } from './fullmotor-crm.mjs';
-import { logMessage, getConversations, getMessages } from './db.mjs';
+import { logMessage, getConversations, getMessages, getLeads, getStats } from './db.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(__dirname, '..');
@@ -511,6 +511,16 @@ app.get('/api/dashboard/conversations', requireDashboardAuth, async (req, res) =
 app.get('/api/dashboard/conversations/:phone/messages', requireDashboardAuth, async (req, res) => {
   const messages = await getMessages(req.params.phone);
   res.json(messages);
+});
+
+app.get('/api/dashboard/leads', requireDashboardAuth, async (req, res) => {
+  const leads = await getLeads({ limit: 200 });
+  res.json(leads);
+});
+
+app.get('/api/dashboard/stats', requireDashboardAuth, async (req, res) => {
+  const stats = await getStats();
+  res.json({ ...stats, inventory: _aldStock.length });
 });
 
 // ── ChileAutos lead webhook ───────────────────────────────────────────────────
